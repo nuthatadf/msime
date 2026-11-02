@@ -43,6 +43,12 @@ final class ImeFrame {
         sidePad = new ImeSidePad(s);
     }
 
+    /** 覆盖面板只隐藏键列的无障碍节点，单手退出与停靠入口仍可达。 */
+    void setKeysAccessibility(int mode) {
+        if (column != null && column.getImportantForAccessibility() != mode)
+            column.setImportantForAccessibility(mode);
+    }
+
     /** 侧栏在哪一边：键盘靠右时在左（索引 0），靠左时在右。 */
     static boolean gutterOnLeft(String mode) {
         return "right".equals(mode);

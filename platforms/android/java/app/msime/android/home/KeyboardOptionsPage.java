@@ -51,7 +51,6 @@ import app.msime.android.SyncSignals;
 import app.msime.android.SyncSwitch;
 import app.msime.android.TouchKeyStyle;
 import app.msime.android.KeyLayoutStyleMigration;
-import app.msime.android.TextTrackpadSettings;
 import app.msime.android.ViewPolicy;
 import app.msime.android.core.InputViewValuePolicy;
 import app.msime.android.JsonPolicy;
@@ -90,7 +89,7 @@ public class KeyboardOptionsPage extends ReloadingDetailPage {
     private static final String[] ANIMATION_LABELS = {"弹起", "涟漪", "发光", "浮起", "无"};
     private record State(JSONObject preferences, AndroidLocalSettings.Snapshot local,
                          KeyboardFeedbackStore.Settings feedback, KeyboardSkin skin, String exportDirectory,
-                         JSONObject trackpadOptions, java.util.List<KeySoundPackPolicy.Pack> soundPacks) {}
+                         java.util.List<KeySoundPackPolicy.Pack> soundPacks) {}
 
     @Override protected void reload() {
         boolean dark = AppMode.dark(requireContext());
@@ -101,7 +100,7 @@ public class KeyboardOptionsPage extends ReloadingDetailPage {
             if (preferences == null) return null;
             return new State(preferences, AndroidLocalSettings.load(context), KeyboardFeedbackStore.load(context),
                 HostStore.keyboardSkin(context, preferences, dark, HostStore.seed(context)), ClipboardExport.directoryName(context),
-                HostStore.textTrackpadOptions(), KeySoundPacks.load(context));
+                KeySoundPacks.load(context));
         }, this::render);
     }
 
@@ -305,7 +304,6 @@ public class KeyboardOptionsPage extends ReloadingDetailPage {
             checked -> saveLocalSetting(AndroidLocalSettings.SPACE_VOICE, checked));
         gestures.help("退格键左滑可连续删除，保持按住再右滑可逐步恢复，松手后无法恢复；密码、无痕和禁止学习的输入框不支持此手势。上滑仍可快速删除，有备份时长按下滑可撤回。");
         gestures.help("空格键上滑后松手可复制当前输入框的全文，滑回可取消；复制预览遵守下方剪贴板设置。长按语音开始后，上滑仍用于取消语音。");
-        renderTrackpad(sectionColumn(target, "手势"), preferences, state.trackpadOptions());
 
         boolean hidden = settings.bool(AndroidLocalSettings.TOOLBAR_HIDDEN);
         GroupCard bar = GroupCard.add(sectionColumn(target, "工具栏"), "键盘工具栏");
@@ -777,44 +775,6 @@ public class KeyboardOptionsPage extends ReloadingDetailPage {
 
     private void savePreference(String key, Object value) {
         savePreferences(preferences -> preferences.put(key, value));
-    }
-
-    private void renderTrackpad(LinearLayout column, JSONObject preferences, JSONObject options) {
-        GroupCard group = GroupCard.add(column, "文本编辑触控板");
-        TextTrackpadSettings value = TextTrackpadSettings.from(preferences);
-        JSONObject horizontal = options == null ? null : options.optJSONObject("horizontal_dp");
-        JSONObject vertical = options == null ? null : options.optJSONObject("vertical_dp");
-        if (value == null || horizontal == null || vertical == null) {
-            group.note("触控板设置尚未就绪，请返回后重试。");
-            return;
-        }
-        group.toggle("优先使用触控板", null,
-            value.enabled(), checked -> saveTrackpad("enabled", checked)).help("打开文本编辑时显示触控板，可在面板中切回方向键");
-        group.toggle("按住工具临时打开", null,
-            value.holdToOpen(), checked -> saveTrackpad("hold_to_open", checked)).help("按住工具栏的文本编辑按钮打开触控板，松手返回之前的面板");
-        group.slider("水平移动距离", null,
-            NumberPolicy.strictInt(horizontal, "minimum", -1), NumberPolicy.strictInt(horizontal, "maximum", -1),
-            1, value.horizontalDp(), number -> number + " dp", number -> saveTrackpadDistance("horizontal_dp", number)).help("距离越小，左右移动字符越快");
-        group.slider("垂直移动距离", null,
-            NumberPolicy.strictInt(vertical, "minimum", -1), NumberPolicy.strictInt(vertical, "maximum", -1),
-            1, value.verticalDp(), number -> number + " dp", number -> saveTrackpadDistance("vertical_dp", number)).help("距离越小，上下移动行越快");
-        group.toggle("双击选词与三击选行", null,
-            value.tapSelection(), checked -> saveTrackpad("tap_selection", checked)).help("编辑器提供足够文字时生效；长按后拖动也可延伸选区");
-        group.toggle("逐步振动", null, value.haptics(),
-            checked -> saveTrackpad("haptics", checked)).help("跟随键盘振动和系统触感开关");
-        group.toggle("显示移动轨迹", null, value.trail(), checked -> saveTrackpad("trail", checked));
-        group.toggle("光标文字放大镜", null,
-            value.magnifier(), checked -> saveTrackpad("magnifier", checked)).help("显示光标附近文字；密码使用掩码，编辑器不提供文字时显示提示");
-    }
-
-    private void saveTrackpad(String key, Object value) {
-        savePreferences(preferences -> KeyboardSheets.child(preferences, "android_text_trackpad").put(key, value));
-    }
-
-    /** 两个距离滑块保存成功后不重建页面，只在失败时刷新把滑块拨回磁盘上的值：`MsSlider` 对方向键和读屏调整每一格都提交，成功也重建的话旧的 SeekBar 节点被移除，读屏用户每调一格就丢一次焦点（与「键盘底部高度」相同，#10513）。滑块旁的数值由滑块自己更新，其他行不依赖这两个值。 */
-    private void saveTrackpadDistance(String key, int value) {
-        KeyboardSheets.save(this, preferences -> KeyboardSheets.child(preferences, "android_text_trackpad").put(key, value),
-            null, this::reload);
     }
 
     /** 改一个工具栏开关（`touch_toolbar` 的成员、语音的 `touch_voice_shortcut` 或本地设置），写完重画预览（显示方式还会改变按钮行的可用状态）。 */

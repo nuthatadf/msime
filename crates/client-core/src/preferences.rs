@@ -628,7 +628,7 @@ pub enum TextEditButton {
 pub fn default_text_edit_button_order() -> Vec<TextEditButton> {
     use TextEditButton::*;
     vec![
-        Copy, Paste, SelectAll, Cut, Space, NumberPad, Delete, SelectLine,
+        Copy, Cut, Paste, SelectAll, Delete, NumberPad, Space, SelectLine,
     ]
 }
 
@@ -6532,7 +6532,7 @@ fn object_key_path(path: &serde_ignored::Path<'_>) -> Option<Vec<String>> {
 
 /// 写进 preferences.json 的文档：快照本身，加上读盘时记下的未知键和列表元素（[`restore_unknown_fields`]）。
 ///
-/// 文本编辑面板的排列等于默认排列时不写出。已经发出去的 Android 0.6.0、HarmonyOS 0.3.0-beta、macOS 0.55.0 和 Linux 0.14.0 只认识七个动作，读到带「选择行」的排列会整份读不了、打不了字（`tests/fixtures/released-preferences` 里是它们写下的文档）；那些版本给这个键配了默认值，缺这个键时用自己的七个动作。从每日构建退回正式版、在设置同步或导入之外拿新文档给旧版本读，只要用户没在 Android 上排过顺序就都读得了。只省在盘上：经 FFI 交给宿主的快照照旧带着完整排列，Android 的面板和排序页直接读它。
+/// 文本编辑面板的排列等于默认排列时不写出。已经发出去的 Android 0.6.0、HarmonyOS 0.3.0-beta、macOS 0.55.0 和 Linux 0.14.0 只认识七个动作，读到带「选择行」的排列会整份读不了、打不了字（`tests/fixtures/released-preferences` 里是它们写下的文档）；那些版本给这个键配了默认值，缺这个键时用自己的七个动作。显式排列以「选择行」结尾时只写前七项，读盘会将它补回末尾，既保留旧排列也不使旧版本无法读取；「选择行」排在其他位置时照常写全。只省在盘上：经 FFI 交给宿主的快照照旧带着完整排列，Android 的面板和排序页直接读它。
 fn document_for_disk(
     snapshot: &PreferencesSnapshot,
     unknown: &[UnknownPreferenceField],
@@ -6541,6 +6541,15 @@ fn document_for_disk(
     if let Some(serde_json::Value::Object(preferences)) = document.get_mut("preferences") {
         if snapshot.preferences.touch_text_edit_button_order == default_text_edit_button_order() {
             preferences.remove("touch_text_edit_button_order");
+        } else if snapshot.preferences.touch_text_edit_button_order.last()
+            == Some(&TextEditButton::SelectLine)
+        {
+            if let Some(order) = preferences
+                .get_mut("touch_text_edit_button_order")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                order.pop();
+            }
         }
     }
     if let Some(preferences) = document.get_mut("preferences") {

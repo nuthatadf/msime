@@ -10030,21 +10030,59 @@ fn a_default_text_edit_order_is_left_out_of_the_file() {
         serde_json::to_value(&customized.touch_text_edit_button_order).unwrap()
     );
     assert_eq!(store.load().unwrap(), saved);
-    // 已发布版本写下的七个动作补齐后就是默认排列：本版本存一次，文件里不再有这个键，那个版本读回去照样读得了。
+    // 已发布版本显式写下的七项不改成新默认，也不增写旧版本不认识的选行；没写该字段的文档仍省略。
     for (release, document) in RELEASED_DOCUMENTS {
         fs::write(store.path(), document).unwrap();
         let loaded = store.load().unwrap();
         let mut changed = loaded.preferences.clone();
         changed.candidate_page_size = 7;
-        store.save(loaded.revision, changed).unwrap();
-        assert!(
-            written()["preferences"]
-                .get("touch_text_edit_button_order")
-                .is_none(),
+        let saved = store.save(loaded.revision, changed).unwrap();
+        let original: serde_json::Value = serde_json::from_str(document).unwrap();
+        let expected_order = original["preferences"]
+            .get("touch_text_edit_button_order")
+            .map(|_| {
+                serde_json::json!([
+                    "copy",
+                    "paste",
+                    "select_all",
+                    "cut",
+                    "space",
+                    "number_pad",
+                    "delete"
+                ])
+            });
+        assert_eq!(
+            written()["preferences"].get("touch_text_edit_button_order"),
+            expected_order.as_ref(),
             "{release}"
         );
+        assert_eq!(store.load().unwrap(), saved, "{release}");
     }
 }
+#[test]
+fn a_custom_text_edit_order_with_a_trailing_hidden_action_keeps_the_legacy_disk_shape() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = PreferencesStore::new(directory.path());
+    let mut preferences = Preferences::default();
+    preferences.touch_text_edit_button_order.swap(0, 1);
+    let saved = store.save(0, preferences).unwrap();
+    let document: serde_json::Value =
+        serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+    assert_eq!(
+        document["preferences"]["touch_text_edit_button_order"],
+        serde_json::json!([
+            "cut",
+            "copy",
+            "paste",
+            "select_all",
+            "delete",
+            "number_pad",
+            "space"
+        ])
+    );
+    assert_eq!(store.load().unwrap(), saved);
+}
+
 #[test]
 fn android_keyboard_skin_slots_round_trip_without_changing_legacy_theme() {
     let mut preferences = Preferences {
@@ -10131,7 +10169,7 @@ fn text_edit_button_order_saved_before_select_line_still_loads() {
             .unwrap()
             .preferences
             .touch_text_edit_button_order,
-        default_text_edit_button_order()
+        vec![Copy, Paste, SelectAll, Cut, Space, NumberPad, Delete, SelectLine]
     );
 }
 
@@ -10225,7 +10263,7 @@ fn text_edit_button_order_reads_any_list_it_is_given() {
         (
             serde_json::json!(["cut", "copy", "cut", "cut"]),
             vec![
-                Cut, Copy, Paste, SelectAll, Space, NumberPad, Delete, SelectLine,
+                Cut, Copy, Paste, SelectAll, Delete, NumberPad, Space, SelectLine,
             ],
         ),
         // 空列表和不是字符串的元素：回到默认排列。
@@ -10233,7 +10271,7 @@ fn text_edit_button_order_reads_any_list_it_is_given() {
         (
             serde_json::json!([7, null, {"copy": true}, "delete"]),
             vec![
-                Delete, Copy, Paste, SelectAll, Cut, Space, NumberPad, SelectLine,
+                Delete, Copy, Cut, Paste, SelectAll, NumberPad, Space, SelectLine,
             ],
         ),
     ] {
@@ -10295,6 +10333,7 @@ const RELEASED_DOCUMENTS: [(&str, &str); 6] = [
 
 #[test]
 fn documents_written_by_released_versions_load_and_save() {
+    use TextEditButton::*;
     for (release, document) in RELEASED_DOCUMENTS {
         let directory = tempfile::tempdir().unwrap();
         let store = PreferencesStore::new(directory.path());
@@ -10303,9 +10342,19 @@ fn documents_written_by_released_versions_load_and_save() {
             .load()
             .unwrap_or_else(|error| panic!("{release}: {error}"));
         loaded.preferences.validate().unwrap();
+        let original: serde_json::Value = serde_json::from_str(document).unwrap();
+        let expected_order = if original["preferences"]
+            .get("touch_text_edit_button_order")
+            .is_some()
+        {
+            vec![
+                Copy, Paste, SelectAll, Cut, Space, NumberPad, Delete, SelectLine,
+            ]
+        } else {
+            default_text_edit_button_order()
+        };
         assert_eq!(
-            loaded.preferences.touch_text_edit_button_order,
-            default_text_edit_button_order(),
+            loaded.preferences.touch_text_edit_button_order, expected_order,
             "{release}"
         );
         assert_eq!(fs::read(store.path()).unwrap(), document.as_bytes());

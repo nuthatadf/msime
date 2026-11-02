@@ -172,7 +172,7 @@ final class ImeBottomBar {
 
     /** 底栏此刻画不画（{@link KeyboardBottomBarPolicy#shown}）。 */
     boolean shown() {
-        if (bar == null) return false;
+        if (bar == null || ViewPolicy.isVisible(s.textEditPanel)) return false;
         return KeyboardBottomBarPolicy.shown(s.localSettings.bool(AndroidLocalSettings.BOTTOM_BAR),
             systemDrawsImeButtons(), navigationKnown, s.floatingDrawn(), s.hardwareKeysCollapsed(), phoneLandscape(),
             DimensionPolicy.fromPixels(s, navigationBottom));

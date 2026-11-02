@@ -404,8 +404,8 @@ check "Screen capture protection window acceptance failed" MSIME_DEVICE_SMOKE_PA
 check "Native common phrase note acceptance failed" MSIME_DEVICE_SMOKE_PASSED run_instrumentation app.msime.android.test/app.msime.android.test.SettingsDeviceSmoke -e phrase-notes true
 # 常用语分类覆盖原生管理、纵向展开、正文插入和本地备份；最低 API 同样执行。
 check "Native common phrase category acceptance failed" MSIME_DEVICE_SMOKE_PASSED run_instrumentation app.msime.android.test/app.msime.android.test.SettingsDeviceSmoke -e phrase-categories true
-# 触控板通过独立编辑器验收真实 DPAD、选区、临时面板和密码回读，最低 API 同样覆盖。
-check "Text trackpad acceptance failed" MSIME_DEVICE_SMOKE_PASSED run_instrumentation app.msime.android.test/app.msime.android.test.TextEditRecentClipboardDeviceSmoke -e trackpad true
+# 编辑面板的固定布局、行边界与按键命中在最低 API 同样执行。
+check "Text edit layout acceptance failed" MSIME_DEVICE_SMOKE_PASSED run_instrumentation app.msime.android.test/app.msime.android.test.TextEditRecentClipboardDeviceSmoke -e layout-only true
 
 # 真实恢复和撤销涉及应用私有目录，最低 API 的核心验收也执行合成备份回归。
 check "Layout backup restore acceptance failed" MSIME_DEVICE_SMOKE_PASSED run_instrumentation app.msime.android.test/app.msime.android.test.PreferencesDeviceSmoke -e backup-layout true

@@ -8,22 +8,53 @@ import java.util.List;
 
 public final class TextEditPanelModelSmoke {
     public static void main(String[] args) {
-        List<Action> order = List.of(Action.COPY, Action.PASTE, Action.SELECT_ALL, Action.CUT,
-            Action.SPACE, Action.NUMBER_PAD, Action.DELETE, Action.SELECT_LINE);
-        check(TextEditPanelModel.keys(order).size() == 18, "行首、行尾和选择行必须加入固定网格");
-        Action lineStart = Action.valueOf("LINE_START"), lineEnd = Action.valueOf("LINE_END");
+        List<Action> order = List.of(Action.COPY, Action.CUT, Action.PASTE, Action.SELECT_ALL,
+            Action.DELETE, Action.NUMBER_PAD, Action.SPACE, Action.SELECT_LINE);
+        check(TextEditPanelModel.keys(order).size() == 15, "十五个编辑动作必须同屏可达");
+        Action lineStart = Action.LINE_START, lineEnd = Action.LINE_END;
         checkGrid(order);
         java.util.ArrayList<Action> reversed = new java.util.ArrayList<>(order);
         java.util.Collections.reverse(reversed);
         checkGrid(reversed);
         Action[][] grid = grid(order);
-        check(grid[0][2] == lineStart && grid[0][6] == lineEnd, "行边界位于上排两个空位");
-        check(grid[0][4] == Action.UP && grid[1][2] == Action.LEFT
-            && grid[1][4] == Action.SELECT && grid[1][6] == Action.RIGHT && grid[2][4] == Action.DOWN,
-            "arrows form a cross around selection");
+        check(grid[0][0] == Action.COPY && grid[1][0] == Action.CUT && grid[2][0] == Action.PASTE
+            && grid[3][0] == Action.SELECT_ALL && grid[0][8] == Action.DELETE
+            && grid[1][8] == Action.NUMBER_PAD && grid[2][8] == Action.SPACE, "精简侧栏分组");
+        check(grid[0][4] == Action.UP && grid[0][2] == Action.LEFT
+            && grid[1][4] == Action.SELECT && grid[0][6] == Action.RIGHT && grid[2][4] == Action.DOWN,
+            "方向键围绕选择，左右键填满中央区域");
         check(grid[3][2] == Action.DOCUMENT_START && grid[3][5] == Action.DOCUMENT_END
-            && grid[3][8] == Action.RETURN && grid[4][0] == Action.SELECT_LINE,
-            "document edges, select line and return keep fixed positions");
+            && grid[3][8] == Action.RETURN, "文首尾与换行位于固定位置");
+        check(TextEditPanelModel.key(Action.SELECT).label().equals("开始选择"), "选择入口说明动作");
+        List<Action> legacy = List.of(Action.COPY, Action.SELECT_LINE, Action.PASTE, Action.SELECT_ALL,
+            Action.CUT, Action.SPACE, Action.NUMBER_PAD, Action.DELETE);
+        List<Action> visible = TextEditPanelModel.visibleOrder(legacy);
+        check(visible.size() == 7 && !visible.contains(Action.SELECT_LINE), "旧动作不占可见排序位置");
+        java.util.ArrayList<Action> changed = new java.util.ArrayList<>(visible);
+        java.util.Collections.reverse(changed);
+        List<Action> saved = TextEditPanelModel.mergeVisibleOrder(legacy, changed);
+        check(saved.get(1) == Action.SELECT_LINE && saved.size() == 8
+            && TextEditPanelModel.visibleOrder(saved).equals(changed), "保存新顺序保留旧身份及位置");
+        try {
+            TextEditPanelModel.mergeVisibleOrder(legacy, List.of(Action.COPY, Action.COPY));
+            throw new AssertionError("重复和缺项排列必须被拒绝");
+        } catch (IllegalArgumentException expected) { }
+        for (int[] size : new int[][] {{240, 160}, {320, 199}, {401, 239}, {600, 301}, {1200, 160}}) {
+            List<Key> keys = TextEditPanelModel.keys(order);
+            for (int index = 0; index < keys.size(); index++) {
+                var bounds = TextEditPanelModel.bounds(keys.get(index), size[0], size[1], 3);
+                check(bounds.left() >= 0 && bounds.top() >= 0 && bounds.right() <= size[0]
+                    && bounds.bottom() <= size[1] && bounds.width() > 0 && bounds.height() > 0,
+                    "窄宽与横屏布局保持有效点击范围");
+                for (int previous = 0; previous < index; previous++) {
+                    var other = TextEditPanelModel.bounds(keys.get(previous), size[0], size[1], 3);
+                    check(Math.min(bounds.right(), other.right()) <= Math.max(bounds.left(), other.left())
+                        || Math.min(bounds.bottom(), other.bottom()) <= Math.max(bounds.top(), other.top()),
+                        "真实布局函数不能让点击范围相交");
+                }
+            }
+            checkAlignment(keys, size[0], size[1], 3);
+        }
 
         // 方向键和删除连发，其余不连发。
         for (Key key : TextEditPanelModel.keys(order)) {
@@ -106,19 +137,41 @@ public final class TextEditPanelModelSmoke {
                 }
             }
         }
-        check(seen.equals(EnumSet.allOf(Action.class)), "every action has a visible key");
+        EnumSet<Action> expected = EnumSet.allOf(Action.class);
+        expected.removeAll(EnumSet.of(Action.LINE_START, Action.LINE_END, Action.SELECT_LINE, Action.SYMBOLS));
+        check(seen.equals(expected), "只显示精简设计中的动作，旧动作身份保留");
         return grid;
     }
 
     private static void checkGrid(List<Action> order) {
         Action[][] grid = grid(order);
-        for (int index = 0; index < order.size(); index++)
-            check(grid[index < 4 ? index : index == 7 ? 4 : index - 4][index < 4 || index == 7 ? 0 : 8] == order.get(index),
-                "side action follows saved order");
-        for (int row = 0; row < grid.length; row++) for (int column = 0; column < grid[row].length; column++) {
-            boolean blank = (row == 2 && (column == 2 || column == 3 || column == 6 || column == 7))
-                || (row == 4 && column >= 2);
-            check((grid[row][column] == null) == blank, "下排两个角落仍留白");
+        List<Action> visible = TextEditPanelModel.visibleOrder(order);
+        for (int index = 0; index < visible.size(); index++) {
+            int row = index < 4 ? index : index - 4;
+            check(grid[row][index < 4 ? 0 : 8] == visible.get(index), "自定义顺序映射到七个可排序位置");
+        }
+        for (Action[] row : grid) for (Action action : row)
+            check(action != null, "固定网格没有孤立空行或空格");
+    }
+
+    private static void checkAlignment(List<Key> keys, int width, int height, int margin) {
+        TextEditPanelModel.Bounds[] side = new TextEditPanelModel.Bounds[4];
+        for (Key key : keys)
+            if (key.column() == 0) side[key.row()] = TextEditPanelModel.bounds(key, width, height, margin);
+        var panel = TextEditPanelModel.centralBounds(width, height, margin);
+        check(panel.top() == side[0].top() && panel.bottom() == side[3].bottom(), "中央外框与侧栏两端齐平");
+        for (int row = 1; row <= 2; row++)
+            check(Math.abs(TextEditPanelModel.seam(row, height, margin)
+                - (side[row - 1].bottom() + side[row].top()) / 2f) <= .5f, "前两条分隔线对齐间隙中线");
+        for (Key key : keys) {
+            if (!TextEditPanelModel.isCentral(key)) continue;
+            var bounds = TextEditPanelModel.bounds(key, width, height, margin);
+            if (key.action() == Action.DOCUMENT_START || key.action() == Action.DOCUMENT_END)
+                check(bounds.top() == side[3].top() && bounds.height() == side[3].height(),
+                    "文首尾排对齐末排侧键上边，视觉高度不能多出半格间隙");
+            int row = key.action() == Action.LEFT || key.action() == Action.RIGHT ? 1 : key.row();
+            check(Math.abs(TextEditPanelModel.contentCenterY(key, height)
+                - (side[row].top() + side[row].bottom()) / 2f) <= .5f, "中央图标对齐侧键行中心");
         }
     }
 

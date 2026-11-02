@@ -1,70 +1,38 @@
 package app.msime.android;
 
-import app.msime.android.LayoutPolicy;
-
 import android.content.ClipData;
 import android.content.ClipboardManager;
-import android.graphics.Typeface;
+import android.graphics.Color;
 import android.os.SystemClock;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
-import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.TextView;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.EnumMap;
-import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import org.json.JSONObject;
-import org.json.JSONException;
 
-/**
- * 文本编辑面板（#5625）：键与动作见 {@link TextEditPanelModel}，这里负责建视图、把动作交给编辑器。和常用语、剪贴板面板一样盖在键区上、顶边对齐工具栏下沿，从功能面板的「文本编辑」打开，工具栏的收起键（此时是「返回键盘」）或再点一次功能面板回到键盘。
- *
- * <p>所有动作都直接作用于编辑器：打开面板前先由 Engine 完成组字，面板开着时不经过 Engine。方向键和删除按住连发，节奏与删除键相同（{@link BackspaceRepeatPolicy}）；删除键还带上滑快速删除。
- */
+/** 文本编辑的四键侧栏、无缝方向区、选择和文档边界；编辑动作交给当前编辑器。 */
 final class ImeTextEditPanel {
     private final MSIMEInputService s;
-    private final Map<TextEditPanelModel.Action, Button> buttons =
-        new EnumMap<>(TextEditPanelModel.Action.class);
+    private Button selectionButton;
     private boolean selecting;
     private Runnable repeatTask;
-    private TextTrackpadSettings trackpadSettings;
-    private boolean liveTrackpadPreferencesLoaded;
-    private TextTrackpadView trackpad;
-    private Button modeButton;
-    private Button trackpadSelect;
-    private boolean modeSaving;
-    private boolean destroyed;
-    private long modeSaveGeneration;
-    private final TextTrackpadSelectionVersion selectionVersion = new TextTrackpadSelectionVersion();
     private int selectionStart = -1;
     private int selectionEnd = -1;
-    private boolean previewActive;
-    private InputConnection previewTarget;
-    private android.graphics.RectF previewAnchor;
-    private TextTrackpadText.Preview previewText;
-    private TextTrackpadMagnifier magnifier;
-    private boolean temporaryTrackpad;
-    private boolean previouslyOpen;
-    private boolean previousSelecting;
-    private ShortcutTouch shortcutTouch;
-    private final ExecutorService trackpadWorker = Executors.newSingleThreadExecutor(
-        ThreadPolicy.namedDaemonFactory("msime-text-trackpad"));
-    private final TextTrackpadReadQueue<TextTrackpadText.Range> selectionReads;
-    private final TextTrackpadReadQueue<TextTrackpadText.Preview> previewReads;
+    private TextView previewText;
+    private Button dismissPreview;
+    private Button previewAction;
+    private final List<KeyboardShortcutButton> shortcuts = new ArrayList<>();
+    private Button undoHistoryButton;
+    private Button redoHistoryButton;
 
-    ImeTextEditPanel(MSIMEInputService s) {
-        this.s = s;
-        selectionReads = new TextTrackpadReadQueue<>(trackpadWorker, s.main::post);
-        previewReads = new TextTrackpadReadQueue<>(trackpadWorker, s.main::post);
-    }
+    ImeTextEditPanel(MSIMEInputService service) { s = service; }
 
-    /** 所有操作同屏可见；中央十字下排两角留白，父面板拦截空白处触摸。 */
     LinearLayout build() {
         LinearLayout panel = LayoutPolicy.column(s);
         panel.setContentDescription("文本编辑面板");
@@ -73,114 +41,145 @@ final class ImeTextEditPanel {
         ViewPolicy.setClickable(panel, true);
         populate(panel);
         ViewPolicy.hide(panel);
-        configureTrackpad();
         return panel;
     }
 
     private void populate(LinearLayout panel) {
-        if (shortcutTouch != null) shortcutTouch.cancel(false);
-        setPreviewActive(false);
-        selectionReads.cancel();
-        if (trackpad != null) trackpad.cancel();
         stopRepeat();
-        buttons.clear();
+        selectionButton = null;
+        shortcuts.clear();
+        undoHistoryButton = null;
+        redoHistoryButton = null;
         panel.removeAllViews();
-        LinearLayout modes = LayoutPolicy.row(s);
-        modeButton = s.keyboardKey("切换为触控板", "切换为触控板", this::toggleTrackpad);
-        // 模式行固定 32 dp 高，六个字折成两行时第二行会被裁掉；窄窗口（自由窗口、分屏）里只缩字号、保持一行。
-        KeyboardTypographyPolicy.setFittedKeyTextSize(modeButton, 10, KeyboardTypographyPolicy.DEFAULT_KEY_TEXT_SP);
-        modes.addView(modeButton, LayoutPolicy.weightedMatchParentParams(1));
-        trackpadSelect = s.keyboardKey("选择", "选择模式", () -> perform(TextEditPanelModel.Action.SELECT));
-        modes.addView(trackpadSelect, LayoutPolicy.weightedMatchParentParams(1));
-        panel.addView(modes, LayoutPolicy.matchWidthHeightPx(s.pixels(32)));
-        FrameLayout movement = new FrameLayout(s);
-        LinearLayout grid = LayoutPolicy.column(s);
-        movement.addView(grid, LayoutPolicy.frameMatchParentParams());
-        populateGrid(grid);
-        trackpad = new TextTrackpadView(s, new TextTrackpadView.Listener() {
-            @Override public Object target() { return s.connection; }
-            @Override public boolean move(TextTrackpadGesture.Steps steps) { return moveTrackpad(steps); }
-            @Override public void select(TextTrackpadGesture.Tap tap) { selectTrackpad(tap); }
-            @Override public void active(boolean active) {
-                if (active) {
-                    selectionReads.cancel();
-                    selectionVersion.invalidate();
-                }
-                setPreviewActive(active);
-            }
-        });
-        TextTrackpadView currentTrackpad = trackpad;
-        movement.addView(currentTrackpad, new FrameLayout.LayoutParams(1, 1));
-        // 触控板替代中央第二、三行；上排行首尾、两侧八键和底部首尾、换行保持可用。
-        movement.addOnLayoutChangeListener((view, left, top, right, bottom,
-                oldLeft, oldTop, oldRight, oldBottom) -> {
-            int width = right - left, height = bottom - top, margin = s.pixels(3);
-            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                Math.max(1, width * 6 / 10 - 2 * margin), Math.max(1, height / 2 - 2 * margin));
-            params.leftMargin = width * 2 / 10 + margin;
-            params.topMargin = height / 4 + margin;
-            currentTrackpad.setLayoutParams(params);
-        });
-        panel.addView(movement, LayoutPolicy.weightedWidthParams(1));
-    }
+        KeyboardSkin skin = s.imeStyler.themed(s.skin);
+        LinearLayout header = LayoutPolicy.row(s);
+        header.addView(icon(KeyboardIconPaths.Icon.CHEVRON, 90, "返回键盘", this::backToKeyboard), headerCell());
+        TextView title = ViewPolicy.textLabel(s, "文本编辑", 16);
+        ViewPolicy.setCenteredVertically(title);
+        ViewPolicy.setTextColor(title, Color.parseColor(skin.keyForeground()));
+        header.addView(title, LayoutPolicy.weightedMatchParentParams(1));
+        header.addView(history(false), headerCell());
+        header.addView(history(true), headerCell());
+        panel.addView(header, LayoutPolicy.matchWidthHeightPx(s.pixels(44)));
 
-    private void populateGrid(LinearLayout panel) {
+        TextEditPanelGrid grid = new TextEditPanelGrid(s);
+        grid.setSkin(skin);
         org.json.JSONObject preferences = s.preferencesSnapshot == null
             ? null : s.preferencesSnapshot.optJSONObject("preferences");
-        List<TextEditPanelModel.Key> keys = TextEditPanelModel.keys(TextEditButtonOrder.fromPreferences(preferences));
-        for (int rowIndex = 0; rowIndex < TextEditPanelModel.ROWS; rowIndex++) {
-            LinearLayout row = LayoutPolicy.row(s);
-            int column = 0;
-            for (TextEditPanelModel.Key spec : keys) {
-                if (spec.row() != rowIndex) continue;
-                if (spec.column() > column) row.addView(new View(s), LayoutPolicy.weightedMatchParentParams(spec.column() - column));
-                FrameLayout slot = new FrameLayout(s);
-                FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
-                int margin = s.pixels(3);
-                params.setMargins(margin, margin, margin, margin);
-                slot.addView(key(spec.action()), params);
-                row.addView(slot, LayoutPolicy.weightedMatchParentParams(spec.columnSpan()));
-                column = spec.column() + spec.columnSpan();
-            }
-            if (column < TextEditPanelModel.COLUMNS)
-                row.addView(new View(s), LayoutPolicy.weightedMatchParentParams(TextEditPanelModel.COLUMNS - column));
-            panel.addView(row, LayoutPolicy.weightedWidthParams(1));
-        }
+        for (TextEditPanelModel.Key spec : TextEditPanelModel.keys(TextEditButtonOrder.fromPreferences(preferences)))
+            grid.addKey(spec, key(spec));
+        panel.addView(grid, LayoutPolicy.weightedWidthParams(1));
+
+        LinearLayout footer = LayoutPolicy.row(s);
+        footer.addView(shortcut(KeyboardShortcutIconPolicy.Icon.GLOBE, "切换输入法", () -> {
+            InputMethodManager manager = s.getSystemService(InputMethodManager.class);
+            if (manager != null) manager.showInputMethodPicker();
+        }), headerCell());
+        previewText = ViewPolicy.textLabel(s, null, 12);
+        ViewPolicy.setCentered(previewText);
+        ViewPolicy.setTextColor(previewText, Color.parseColor(skin.keyForeground()));
+        previewText.setMaxLines(2);
+        footer.addView(previewText, LayoutPolicy.weightedMatchParentParams(1));
+        previewAction = s.keyboardKey("", "", s::runRecentClipQuickAction);
+        KeyboardTypographyPolicy.setFittedKeyTextSize(previewAction, 10, 12);
+        footer.addView(previewAction, headerCell());
+        dismissPreview = s.keyboardKey("×", "不再显示这条复制的内容", s::dismissRecentClip);
+        dismissPreview.setContentDescription("不再显示这条复制的内容");
+        footer.addView(dismissPreview, headerCell());
+        footer.addView(shortcut(KeyboardShortcutIconPolicy.Icon.CLIPBOARD, "剪贴板",
+            s.imeToolbar.panelToggle(() -> s.clipboardSurface, s.imePanels::showClipboardHistory)), headerCell());
+        panel.addView(footer, LayoutPolicy.matchWidthHeightPx(s.pixels(44)));
+        styleShortcuts(Color.parseColor(s.skin.toolbarIcon()), Color.parseColor(s.skin.toolbarActiveIcon()),
+            Color.parseColor(s.skin.toolbarActiveBackground()));
     }
 
-    private Button key(TextEditPanelModel.Action action) {
-        TextEditPanelModel.Key spec = TextEditPanelModel.key(action);
+    private LinearLayout.LayoutParams headerCell() {
+        return LayoutPolicy.linearParamsPx(s.pixels(44), LinearLayout.LayoutParams.MATCH_PARENT);
+    }
+
+    private Button icon(KeyboardIconPaths.Icon glyph, float rotation, String description, Runnable action) {
+        TextEditIconButton button = new TextEditIconButton(s, glyph, rotation);
+        button.setText(description);
+        button.setContentDescription(description);
+        button.setKeyboardRole(KeyboardKeyRole.PLAIN);
+        s.imeStyler.styleButton(button, false);
+        s.bindCountedAction(button, action);
+        return button;
+    }
+
+    private Button history(boolean redo) {
+        Button button = shortcut(redo ? KeyboardShortcutIconPolicy.Icon.REDO : KeyboardShortcutIconPolicy.Icon.UNDO,
+            redo ? "重做" : "撤销", () -> s.imeToolbar.performHistory(redo));
+        if (redo) redoHistoryButton = button;
+        else undoHistoryButton = button;
+        return button;
+    }
+
+    private Button shortcut(KeyboardShortcutIconPolicy.Icon glyph, String description, Runnable action) {
+        KeyboardShortcutButton button = new KeyboardShortcutButton(s, glyph);
+        button.setText(description);
+        button.setContentDescription(description);
+        s.imeStyler.styleButton(button, false);
+        s.bindCountedAction(button, action);
+        shortcuts.add(button);
+        return button;
+    }
+
+    /** 与普通工具栏和底栏共用图标色、激活色和柔和底块。 */
+    void styleShortcuts(int idle, int active, int fill) {
+        for (KeyboardShortcutButton button : shortcuts) {
+            button.setIconColors(idle, active);
+            button.setActiveFill(fill);
+        }
+        boolean enabled = s.imeToolbar.canDispatchHistory();
+        if (undoHistoryButton != null) ViewPolicy.setEnabled(undoHistoryButton, enabled);
+        if (redoHistoryButton != null) ViewPolicy.setEnabled(redoHistoryButton, enabled);
+    }
+
+    private Button key(TextEditPanelModel.Key spec) {
+        TextEditPanelModel.Action action = spec.action();
         Runnable run = () -> perform(action);
         Button button;
         if (action == TextEditPanelModel.Action.DELETE) {
             button = s.backspaceKey(run);
-            s.imeLetterRows.bindBackspaceRepeat(button, run);
         } else if (action == TextEditPanelModel.Action.RETURN) {
-            button = new TextEditReturnButton(s);
-            button.setText(spec.label());
-            s.imeStyler.styleButton(button, false);
-            s.bindCountedAction(button, run);
-            button.setOnLongClickListener(ignored -> {
-                if (!SymbolPanelEntryPolicy.opens(s.connection != null, s.symbolPanel != null)
-                        || s.textEditPanel == null || !s.textEditPanel.isShown()) return true;
-                close();
-                s.imePanels.showSymbolPanel();
-                return true;
-            });
+            button = s.iconKey(KeyboardIconKey.Kind.RETURN, spec.label(), spec.description(), run);
+            button.setOnLongClickListener(ignored -> { openSymbols(); return true; });
+        } else if (action == TextEditPanelModel.Action.SELECT) {
+            TextEditPanelButton select = new TextEditPanelButton(s);
+            KeyboardTypographyPolicy.normalizeKeyCap(select);
+            ViewPolicy.setAllCapsFalse(select);
+            select.setText(spec.label());
+            select.setKeyboardRole(KeyboardKeyRole.PLAIN);
+            s.imeStyler.styleButton(select, false);
+            s.bindCountedAction(select, run);
+            KeyboardTypographyPolicy.setFittedKeyTextSize(select, 11, 16);
+            selectionButton = select;
+            button = select;
+        } else if (action == TextEditPanelModel.Action.DOCUMENT_START
+                || action == TextEditPanelModel.Action.DOCUMENT_END) {
+            button = icon(KeyboardIconPaths.Icon.EDIT_DOCUMENT_START,
+                action == TextEditPanelModel.Action.DOCUMENT_END ? 180 : 0, spec.description(), run);
+            ((TextEditIconButton) button).setGlyphSize(28);
+        } else if (isCursorMove(action)) {
+            float rotation = switch (action) {
+                case UP -> 180;
+                case LEFT -> 90;
+                case RIGHT -> -90;
+                default -> 0;
+            };
+            button = icon(KeyboardIconPaths.Icon.CHEVRON, rotation, spec.description(), run);
+            ((TextEditIconButton) button).setGlyphSize(28);
         } else {
             button = s.keyboardKey(spec.label(), spec.description(), run);
-            if (isArrow(action)) {
-                // 系统默认按钮字号和字重让方向箭头显得细小；编辑面板的箭头是主要操作，统一放大并加粗。
-                KeyboardTypographyPolicy.setKeyTextSize(button, isDocumentEdge(action) ? 36 : 24);
-                button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            } else if (action == TextEditPanelModel.Action.SELECT || spec.label().length() > 1)
-                KeyboardTypographyPolicy.setKeyTextSize(button, 16);
-            if (spec.repeats()) bindRepeat(button, run);
+            KeyboardTypographyPolicy.setFittedKeyTextSize(button, 11, 16);
+        }
+        if (spec.repeats()) {
+            if (action == TextEditPanelModel.Action.DELETE) s.imeLetterRows.bindBackspaceRepeat(button, run);
+            else bindRepeat(button, run);
         }
         ViewPolicy.clearPadding(button);
         button.setContentDescription(spec.description());
-        buttons.put(action, button);
         return button;
     }
 
@@ -189,19 +188,17 @@ final class ImeTextEditPanel {
             || action == TextEditPanelModel.Action.DOWN || action == TextEditPanelModel.Action.RIGHT;
     }
 
-    private static boolean isArrow(TextEditPanelModel.Action action) {
-        return action == TextEditPanelModel.Action.LEFT
-            || action == TextEditPanelModel.Action.UP
-            || action == TextEditPanelModel.Action.DOWN
-            || action == TextEditPanelModel.Action.RIGHT
-            || action == TextEditPanelModel.Action.DOCUMENT_START
-            || action == TextEditPanelModel.Action.DOCUMENT_END;
+    private void openSymbols() {
+        if (!SymbolPanelEntryPolicy.opens(s.connection != null, s.symbolPanel != null)
+                || s.textEditPanel == null || !s.textEditPanel.isShown()) return;
+        close();
+        s.imePanels.showSymbolPanel();
     }
 
-    /** `⇤` / `⇥` 的字面框比方向箭头窄，同字号绘制时视觉尺寸明显偏小。 */
-    private static boolean isDocumentEdge(TextEditPanelModel.Action action) {
-        return action == TextEditPanelModel.Action.DOCUMENT_START
-            || action == TextEditPanelModel.Action.DOCUMENT_END;
+    private void backToKeyboard() {
+        s.closeToolbarPanels();
+        s.closeCandidatePanel();
+        s.render();
     }
 
     /** 按下立即执行一次，按住按 {@link BackspaceRepeatPolicy} 的节奏连发，松手或滑出键停止。 */
@@ -251,7 +248,7 @@ final class ImeTextEditPanel {
         repeatTask = null;
     }
 
-    /** 打开面板：先完成组字，关掉别的面板；没有编辑器时提示并不打开。 */
+    /** 打开前完成组字；关闭与返回只清理面板状态，不改编辑器选区。 */
     void show() {
         if (s.connection == null || s.textEditPanel == null) {
             s.notice("当前没有可编辑的输入框");
@@ -262,42 +259,59 @@ final class ImeTextEditPanel {
         s.closeCandidatePanel();
         selecting = false;
         populate(s.textEditPanel);
-        renderState();
         s.imeStyler.applySkinBackground(s.textEditPanel);
-        configureTrackpad();
         ViewPolicy.show(s.textEditPanel);
+        renderState();
     }
 
     void close() {
-        if (shortcutTouch != null) shortcutTouch.cancel(false);
-        temporaryTrackpad = false;
         stopRepeat();
-        selectionReads.cancel();
-        selectionVersion.reset();
-        if (trackpad != null) trackpad.cancel();
-        setPreviewActive(false);
         selecting = false;
         if (s.textEditPanel != null) ViewPolicy.hide(s.textEditPanel);
+        editingAccessibility(false);
     }
 
     private void renderState() {
-        Button select = buttons.get(TextEditPanelModel.Action.SELECT);
+        Button select = selectionButton;
         if (select == null) return;
-        select.setText(selecting ? "取消选择" : "选择");
+        select.setText(selecting ? "取消选择" : "开始选择");
         select.setContentDescription(selecting ? "取消选择" : "选择模式");
         ViewPolicy.setSelected(select, selecting);
         select.setActivated(selecting);
-        // 键帽不是 state-list：styleButton 按调用那一刻的 isSelected() 装一块实心背景，开着时是皮肤强调色。面板开着时不经过引擎 render，也不会整树换肤，只改 selected 标志键面不会变色（#10454），所以这里立即重新上色。角色传 ACCENT，和整树换肤按无障碍描述（没有「按键 」前缀）推出来的一致，不让键帽缓存来回失效。
-        s.imeStyler.styleButton(select, true);
-        if (trackpadSelect != null) {
-            trackpadSelect.setText(selecting ? "取消选择" : "选择");
-            trackpadSelect.setContentDescription(selecting ? "取消选择" : "选择模式");
-            ViewPolicy.setSelected(trackpadSelect, selecting);
-            trackpadSelect.setActivated(selecting);
-            s.imeStyler.styleButton(trackpadSelect, true);
-        }
+        s.imeStyler.styleButton(select, KeyboardKeyRole.PLAIN, s.skin);
         if (android.os.Build.VERSION.SDK_INT >= 30)
             select.setStateDescription(selecting ? "已开启，方向键延伸选区" : "已关闭");
+        refreshFooter();
+    }
+
+    void refreshFooter() {
+        if (previewText == null) return;
+        boolean visible = ViewPolicy.isVisible(s.textEditPanel);
+        boolean preview = visible && ViewPolicy.isVisible(s.recentClipRow);
+        previewText.setText(preview ? s.recentClipButton.getText() : null);
+        previewText.setContentDescription(preview ? s.recentClipButton.getContentDescription() : null);
+        previewText.setVisibility(preview ? View.VISIBLE : View.INVISIBLE);
+        previewText.setImportantForAccessibility(preview ? View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            : View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        previewText.setOnClickListener(preview ? ignored -> s.recentClipButton.performClick() : null);
+        previewText.setClickable(preview);
+        ViewPolicy.setVisible(dismissPreview, preview);
+        String action = preview ? s.recentClipQuickAction(s.recentImageSendable(System.currentTimeMillis())) : null;
+        ViewPolicy.setVisible(previewAction, action != null);
+        if (action != null) {
+            previewAction.setText(RecentClipboardSuggestion.quickActionLabel(action));
+            previewAction.setContentDescription(RecentClipboardSuggestion.quickActionDescription(action));
+        }
+        editingAccessibility(visible);
+    }
+
+    /** 覆盖的键盘不能仍被读屏选中；预览在底栏提供同一入口。 */
+    private void editingAccessibility(boolean editing) {
+        int mode = editing ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO;
+        s.imeFrame.setKeysAccessibility(mode);
+        if (s.shortcutToolbar != null) s.shortcutToolbar.setImportantForAccessibility(mode);
+        if (s.recentClipRow != null) s.recentClipRow.setImportantForAccessibility(mode);
     }
 
     private void perform(TextEditPanelModel.Action action) {
@@ -306,6 +320,9 @@ final class ImeTextEditPanel {
         s.selectionEcho.invalidate();
         if (action == TextEditPanelModel.Action.SELECT) {
             selecting = !selecting;
+        } else if (action == TextEditPanelModel.Action.SYMBOLS) {
+            openSymbols();
+            return;
         } else if (action == TextEditPanelModel.Action.SELECT_LINE) {
             selectLine(target);
             selecting = false;
@@ -404,209 +421,6 @@ final class ImeTextEditPanel {
         return done && released;
     }
 
-    void applyPreferences(JSONObject preferences) {
-        applyPreferences(preferences, true);
-    }
-
-    void applyPreferences(JSONObject preferences, boolean live) {
-        if (!live && liveTrackpadPreferencesLoaded) return;
-        TextTrackpadSettings next = TextTrackpadSettings.from(preferences);
-        if (live && next != null) liveTrackpadPreferencesLoaded = true;
-        if (java.util.Objects.equals(next, trackpadSettings)) return;
-        if (shortcutTouch != null) shortcutTouch.cancel(true);
-        trackpadSettings = next;
-        selectionReads.cancel();
-        setPreviewActive(false);
-        configureTrackpad();
-    }
-
-    private void configureTrackpad() {
-        if (trackpad == null) return;
-        if (trackpadSettings != null) {
-            trackpad.configure(trackpadSettings.horizontalDp(), trackpadSettings.verticalDp(),
-                trackpadSettings.tapSelection(), trackpadSettings.trail(),
-                android.graphics.Color.parseColor(s.skin.background()),
-                android.graphics.Color.parseColor(s.skin.keyForeground()), android.graphics.Color.parseColor(s.skin.accent()));
-        }
-        boolean enabled = trackpadSettings != null && (trackpadSettings.enabled() || temporaryTrackpad);
-        ViewPolicy.setVisible(trackpad, enabled);
-        for (TextEditPanelModel.Action action : new TextEditPanelModel.Action[] {
-                TextEditPanelModel.Action.LEFT, TextEditPanelModel.Action.UP, TextEditPanelModel.Action.SELECT,
-                TextEditPanelModel.Action.DOWN, TextEditPanelModel.Action.RIGHT})
-            ViewPolicy.setVisible(buttons.get(action), !enabled);
-        ViewPolicy.setVisible(trackpadSelect, enabled);
-        modeButton.setText(enabled ? "切换为方向键" : "切换为触控板");
-        modeButton.setContentDescription(enabled ? "切换为方向键" : "切换为触控板");
-        ViewPolicy.setEnabled(modeButton, trackpadSettings != null && !modeSaving && !temporaryTrackpad
-            && !preferencesDirectory().isEmpty());
-    }
-
-    /** 触摸仍归原工具按钮，越过按钮边界后显式转交触控板，避免丢掉松手事件。 */
-    void bindShortcut(Button button) {
-        if (shortcutTouch != null) shortcutTouch.cancel(false);
-        shortcutTouch = new ShortcutTouch(button);
-        button.setOnTouchListener(shortcutTouch);
-    }
-
-    private final class ShortcutTouch implements View.OnTouchListener {
-        private final Button button;
-        private final TextTrackpadHold hold;
-        private final Runnable activate;
-        private boolean owned;
-        private boolean forwarded;
-        private long forwardedAt;
-
-        ShortcutTouch(Button button) {
-            this.button = button;
-            hold = new TextTrackpadHold(android.view.ViewConfiguration.getLongPressTimeout(),
-                android.view.ViewConfiguration.get(s).getScaledTouchSlop());
-            activate = () -> {
-                if (!owned || !hold.activate(s.connection, SystemClock.uptimeMillis())) return;
-                if (s.textEditPanel == null || trackpad == null || trackpadSettings == null) {
-                    cancel(false);
-                    return;
-                }
-                if (s.session != 0 && s.hasEngineComposition()) s.command(2);
-                previouslyOpen = ViewPolicy.isVisible(s.textEditPanel);
-                previousSelecting = selecting;
-                temporaryTrackpad = true;
-                selecting = false;
-                selectionReads.cancel();
-                stopRepeat();
-                configureTrackpad();
-                renderState();
-                s.imeStyler.applySkinBackground(s.textEditPanel);
-                ViewPolicy.show(s.textEditPanel);
-                s.textEditPanel.bringToFront();
-                s.render();
-                s.imeKeyFeedback.playFeedback(button);
-            };
-        }
-
-        @Override public boolean onTouch(View source, MotionEvent event) {
-            int action = event.getActionMasked();
-            if (action == MotionEvent.ACTION_DOWN) {
-                if (trackpadSettings == null || !trackpadSettings.holdToOpen()) return false;
-                cancel(true);
-                owned = hold.down(s.connection, event.getX(), event.getY(), event.getEventTime());
-                if (!owned) return false;
-                button.setPressed(true);
-                button.getParent().requestDisallowInterceptTouchEvent(true);
-                button.postDelayed(activate, android.view.ViewConfiguration.getLongPressTimeout());
-                return true;
-            }
-            if (!owned) return false;
-            if (event.getPointerCount() != 1 || action == MotionEvent.ACTION_CANCEL
-                    || action == MotionEvent.ACTION_OUTSIDE) {
-                cancel(true);
-                return true;
-            }
-            if (action == MotionEvent.ACTION_MOVE) {
-                if (!hold.move(s.connection, event.getPointerCount(), event.getX(), event.getY())) cancel(true);
-                else if (hold.active()) forward(event);
-            } else if (action == MotionEvent.ACTION_UP) {
-                if (hold.active()) forward(event);
-                TextTrackpadHold.End end = hold.up(s.connection);
-                finish(end, true);
-                if (end == TextTrackpadHold.End.TAP) button.performClick();
-            }
-            return true;
-        }
-
-        private void forward(MotionEvent event) {
-            if (trackpad == null || !ViewPolicy.isVisible(trackpad)) return;
-            int[] location = new int[2];
-            trackpad.getLocationOnScreen(location);
-            float x = event.getRawX() - location[0];
-            float y = event.getRawY() - location[1];
-            if (!forwarded) {
-                if (event.getActionMasked() == MotionEvent.ACTION_UP || x < 0 || y < 0
-                        || x >= trackpad.getWidth() || y >= trackpad.getHeight()) return;
-                forwardedAt = event.getEventTime();
-                forwarded = true;
-            }
-            int action = event.getActionMasked();
-            if (forwardedAt == event.getEventTime() && action == MotionEvent.ACTION_MOVE) action = MotionEvent.ACTION_DOWN;
-            MotionEvent local = MotionEvent.obtain(forwardedAt, event.getEventTime(), action, x, y, 0);
-            try { trackpad.dispatchTouchEvent(local); }
-            finally { local.recycle(); }
-        }
-
-        void cancel(boolean restore) { finish(hold.cancel(), restore); }
-
-        void retarget(Object previous, Object next) { hold.retarget(previous, next); }
-
-        private void finish(TextTrackpadHold.End end, boolean restore) {
-            owned = false;
-            button.removeCallbacks(activate);
-            button.setPressed(false);
-            forwarded = false;
-            if (end != TextTrackpadHold.End.RESTORE && !temporaryTrackpad) return;
-            if (trackpad != null) trackpad.cancel();
-            temporaryTrackpad = false;
-            selecting = restore && previousSelecting;
-            configureTrackpad();
-            renderState();
-            if (s.textEditPanel != null && (!restore || !previouslyOpen)) ViewPolicy.hide(s.textEditPanel);
-            if (restore) s.render();
-        }
-    }
-
-    private void toggleTrackpad() {
-        if (destroyed || modeSaving || trackpadSettings == null || preferencesDirectory().isEmpty()) return;
-        boolean enabled = !trackpadSettings.enabled();
-        String directory = preferencesDirectory();
-        long operation = ++modeSaveGeneration;
-        modeSaving = true;
-        ViewPolicy.setEnabled(modeButton, false);
-        s.preferencesWorker.execute(() -> {
-            JSONObject saved = null;
-            try {
-                JSONObject pending = s.nativeValue(NativeClient.loadPreferences(directory));
-                pending.getJSONObject("preferences").getJSONObject("android_text_trackpad").put("enabled", enabled);
-                saved = s.nativeValue(NativeClient.savePreferences(directory, pending.getLong("revision"), pending.toString()));
-            } catch (JSONException | RuntimeException | LinkageError ignored) { }
-            JSONObject result = saved;
-            s.main.post(() -> {
-                if (destroyed || operation != modeSaveGeneration) return;
-                modeSaving = false;
-                if (!directory.equals(preferencesDirectory())) {
-                    configureTrackpad();
-                    return;
-                }
-                if (result == null) s.notice("触控板设置未能保存，请重试");
-                else s.acceptTextTrackpadPreferences(result);
-                configureTrackpad();
-            });
-        });
-    }
-
-    private String preferencesDirectory() {
-        return s.preferencesDirectory;
-    }
-
-    private boolean moveTrackpad(TextTrackpadGesture.Steps steps) {
-        InputConnection target = s.connection;
-        if (target == null) return false;
-        s.selectionEcho.invalidate();
-        boolean extend = selecting || steps.selecting();
-        // 越过文档首尾的步数在这里扣掉（#10141），被扣掉的步不发键也不震动，手势照常继续。
-        TextCursorEdgePolicy.Plan plan = cursorPlan(target, steps.horizontal(), steps.vertical(), extend);
-        TextEditPanelModel.Action horizontal = plan.horizontal() < 0 ? TextEditPanelModel.Action.LEFT : TextEditPanelModel.Action.RIGHT;
-        TextEditPanelModel.Action vertical = plan.vertical() < 0 ? TextEditPanelModel.Action.UP : TextEditPanelModel.Action.DOWN;
-        for (TextEditPanelModel.Action action : new TextEditPanelModel.Action[] {horizontal, vertical}) {
-            int count = action == horizontal ? Math.abs(plan.horizontal()) : Math.abs(plan.vertical());
-            for (int index = 0; index < count; index++) {
-                if (s.connection != target || !sendKey(target, TextEditPanelModel.keyCode(action),
-                        TextEditPanelModel.metaState(action, extend))) return false;
-                if (trackpadSettings != null && trackpadSettings.haptics() && s.hapticsEnabled)
-                    trackpad.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP);
-            }
-        }
-        refreshPreview();
-        return true;
-    }
-
     /**
      * 这一批方向键里实际发几个（{@link TextCursorEdgePolicy}）：光标已在文档首尾时往外的键不发，免得编辑器把它当作焦点导航、把焦点交给相邻的控件。回读在主线程同步进行，每批只读一次、只读要走的那一侧；密码框不读。空格拖动也经这里。
      */
@@ -641,145 +455,18 @@ final class ImeTextEditPanel {
         return Math.abs(plan.horizontal()) + Math.abs(plan.vertical());
     }
 
-    void editorChanged(int start, int end) {
-        close();
-        selectionChanged(start, end);
-    }
+    void editorChanged(int start, int end) { close(); selectionChanged(start, end); }
 
-    /**
-     * 同一输入框重启连接（#10141）：面板、选择模式和进行中的手势都留着，改认新连接；只作废旧连接上在途的选词回读和自身选区记录，放大镜重新绑到新连接。WebView 一类编辑器在拖动中途也会重启连接，原来一律按换输入框处理，面板随之关掉。
-     */
-    void editorRestarted(InputConnection previous, int start, int end) {
-        InputConnection next = s.connection;
-        selectionReads.cancel();
-        selectionVersion.reset();
-        if (trackpad != null) trackpad.retarget(previous, next);
-        if (shortcutTouch != null) shortcutTouch.retarget(previous, next);
-        if (previewActive) setPreviewActive(true);
-        selectionChanged(start, end);
-    }
+    /** 同一输入框重启只更新连接报告，保留面板与选择开关。 */
+    void editorRestarted(InputConnection previous, int start, int end) { selectionChanged(start, end); }
 
-    /** 编辑器最近一次报来的选区是不是这一对，两端都已知才算（同一输入框重启的佐证，见 MSIMEInputService.onStartInput）。 */
     boolean reportedSelection(int start, int end) {
         return start >= 0 && end >= 0 && selectionStart == start && selectionEnd == end;
     }
 
-    void selectionChanged(int start, int end) {
-        selectionVersion.reported(start, end);
-        selectionStart = start;
-        selectionEnd = end;
-        refreshPreview();
-    }
+    void selectionChanged(int start, int end) { selectionStart = start; selectionEnd = end; }
 
-    boolean needsCursorUpdates() {
-        return previewActive && previewTarget != null && previewTarget == s.connection;
-    }
-
-    private void setPreviewActive(boolean active) {
-        boolean wanted = active && trackpadSettings != null && trackpadSettings.magnifier()
-            && s.connection != null;
-        if (wanted && previewActive && previewTarget == s.connection) return;
-        previewReads.cancel();
-        previewText = null;
-        previewAnchor = null;
-        previewActive = wanted;
-        previewTarget = wanted ? s.connection : null;
-        if (!wanted && magnifier != null) magnifier.hide();
-        s.setTextTrackpadPreviewExpanded(wanted && android.os.Build.VERSION.SDK_INT < 30);
-        s.synchronizeCursorUpdates();
-        if (wanted) refreshPreview();
-    }
-
-    private void refreshPreview() {
-        if (!needsCursorUpdates()) return;
-        InputConnection target = previewTarget;
-        boolean password = EditorPolicy.password(s.editorInputType);
-        int length = selectionStart < 0 || selectionEnd < 0 ? -1 : Math.abs(selectionEnd - selectionStart);
-        boolean reverse = selectionEnd < selectionStart;
-        previewReads.request(() -> TextTrackpadText.readPreview(
-            limit -> target.getTextBeforeCursor(limit, 0), limit -> target.getTextAfterCursor(limit, 0),
-            length, password), value -> {
-                if (!needsCursorUpdates() || previewTarget != target || !ViewPolicy.isVisible(s.textEditPanel)) return;
-                previewText = value == null ? null : value.direction(reverse);
-                showPreview();
-            });
-    }
-
-    void cursorAnchor(android.view.inputmethod.CursorAnchorInfo info) {
-        if (!needsCursorUpdates()) return;
-        previewAnchor = null;
-        if (info != null && (info.getInsertionMarkerFlags()
-                & android.view.inputmethod.CursorAnchorInfo.FLAG_HAS_VISIBLE_REGION) != 0) {
-            android.graphics.RectF bounds = new android.graphics.RectF(info.getInsertionMarkerHorizontal(),
-                info.getInsertionMarkerTop(), info.getInsertionMarkerHorizontal(), info.getInsertionMarkerBottom());
-            info.getMatrix().mapRect(bounds);
-            if (Float.isFinite(bounds.left) && Float.isFinite(bounds.right)
-                    && Float.isFinite(bounds.top) && Float.isFinite(bounds.bottom)
-                    && bounds.top <= bounds.bottom) previewAnchor = bounds;
-        }
-        if (previewText != null) showPreview();
-    }
-
-    private void showPreview() {
-        if (magnifier == null) magnifier = new TextTrackpadMagnifier(s);
-        magnifier.show(s.keyboardSurface, previewAnchor, previewText,
-            android.graphics.Color.parseColor(s.skin.background()), android.graphics.Color.parseColor(s.skin.keyForeground()),
-            android.graphics.Color.parseColor(s.skin.accent()));
-    }
-
-    private void selectTrackpad(TextTrackpadGesture.Tap tap) {
-        InputConnection target = s.connection;
-        if (target == null || EditorPolicy.password(s.editorInputType)) return;
-        long version = selectionVersion.current();
-        selectionReads.request(() -> readTrackpadSelection(target, tap), range -> {
-            if (s.connection != target || version != selectionVersion.current() || !ViewPolicy.isVisible(s.textEditPanel)) return;
-            if (range == null) {
-                s.notice("当前编辑器未提供完整的词或行，仍可长按拖动选择");
-                return;
-            }
-            s.selectionEcho.invalidate();
-            try {
-                if (target.setSelection(range.start(), range.end())) selectionVersion.applied(range.start(), range.end());
-                else s.notice("当前输入框不支持选择");
-            }
-            catch (RuntimeException ignored) { s.notice("当前输入框不支持选择"); }
-        });
-    }
-
-    private TextTrackpadText.Range readTrackpadSelection(InputConnection target, TextTrackpadGesture.Tap tap) {
-        try {
-            var request = new android.view.inputmethod.ExtractedTextRequest();
-            request.hintMaxChars = TextTrackpadText.SELECTION_CHARS;
-            var extracted = target.getExtractedText(request, 0);
-            if (extracted == null || extracted.text == null || extracted.startOffset < 0
-                    || extracted.partialStartOffset != -1 || extracted.selectionStart < 0 || extracted.selectionEnd < 0
-                    || extracted.selectionStart > extracted.text.length() || extracted.selectionEnd > extracted.text.length()
-                    || (long) extracted.startOffset + extracted.text.length() > Integer.MAX_VALUE) return null;
-            int focus = extracted.selectionEnd;
-            int from = Math.max(0, focus - TextTrackpadText.SELECTION_CHARS / 2);
-            int to = Math.min(extracted.text.length(), from + TextTrackpadText.SELECTION_CHARS);
-            String text = extracted.text.subSequence(from, to).toString();
-            int tail = Math.max(extracted.selectionStart, extracted.selectionEnd);
-            int remaining = extracted.text.length() - tail;
-            boolean ends = to == extracted.text.length() && remaining <= TextTrackpadText.SELECTION_CHARS
-                && TextTrackpadText.endsDocument(extracted.text, tail, target.getTextAfterCursor(remaining + 1, 0));
-            boolean begins = extracted.startOffset == 0 && from == 0;
-            int offset = extracted.startOffset + from;
-            int caret = extracted.startOffset + focus;
-            return tap == TextTrackpadGesture.Tap.WORD
-                ? TextTrackpadText.word(text, offset, caret, begins, ends, java.util.Locale.getDefault())
-                : TextTrackpadText.line(text, offset, caret, begins, ends);
-        } catch (RuntimeException ignored) { return null; }
-    }
-
-    void shutdown() {
-        destroyed = true;
-        modeSaveGeneration++;
-        close();
-        selectionReads.close();
-        previewReads.close();
-        trackpadWorker.shutdownNow();
-    }
+    void shutdown() { close(); }
 
     private static KeyEvent event(long downTime, long eventTime, int action, int keyCode, int metaState) {
         return new KeyEvent(downTime, eventTime, action, keyCode, 0, metaState,

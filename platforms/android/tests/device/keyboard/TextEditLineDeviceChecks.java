@@ -8,7 +8,7 @@ import android.view.MotionEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
-/** #9601：真实编辑器的行边界、Shift 选择、换行与长按符号，不依赖宿主内部实现。 */
+/** 真实编辑器中的文档边界、Shift 选择、返回、历史操作和换行手势。 */
 final class TextEditLineDeviceChecks {
     private final DeviceSmoke t;
 
@@ -16,41 +16,38 @@ final class TextEditLineDeviceChecks {
 
     void run() throws Exception {
         open("edit");
-        t.stage = "line boundaries and document boundaries";
+        t.stage = "document boundaries remain distinct from line boundaries";
         setSelection(16);
-        tap("移到行首");
-        selection(11, 11);
-        setSelection(16);
-        tap("移到行尾");
-        selection(22, 22);
         tap("移到开头");
         selection(0, 0);
         tap("移到结尾");
         selection(TrackpadEditorActivity.TEXT.length(), TrackpadEditorActivity.TEXT.length());
-        t.stage = "line boundaries extend selection";
+        t.stage = "document boundaries extend selection";
         setSelection(16);
         tap("选择模式");
-        tap("移到行首");
-        selection(11, 16);
+        tap("移到开头");
+        selection(0, 16);
         tap("取消选择");
         setSelection(16);
         tap("选择模式");
-        tap("移到行尾");
-        selection(16, 22);
+        tap("移到结尾");
+        selection(16, TrackpadEditorActivity.TEXT.length());
         tap("取消选择");
-        t.stage = "line boundaries coexist with trackpad";
-        tap("切换为触控板");
-        setSelection(16);
-        tap("移到行首");
-        selection(11, 11);
-        setSelection(16);
-        tap("移到行尾");
-        selection(22, 22);
-
-        tap("切换为方向键");
+        t.stage = "header back preserves the editor selection and resets the toggle";
+        tap("选择模式");
+        tap("返回键盘");
+        t.await(t.key("n"));
+        selection(16, TrackpadEditorActivity.TEXT.length());
+        tap("文本编辑");
+        t.await(t.described("选择模式").and(node -> !node.isSelected()));
+        selection(16, TrackpadEditorActivity.TEXT.length());
+        for (String removed : new String[] {"选择当前行", "移到行首", "移到行尾", "打开符号面板"})
+            for (AccessibilityWindowInfo window : t.automation.getWindows())
+                if (t.find(window.getRoot(), t.described(removed).and(TextEditLineDeviceChecks::panelControl)) != null)
+                    throw new AssertionError("Removed editing control remains visible: " + removed);
 
         open("wrapped");
-        t.stage = "visual line boundaries inside a wrapped paragraph";
+        t.stage = "document boundaries inside a wrapped paragraph";
         String report = t.await(t.field("trackpad-status").and(node -> node.getText() != null
             && node.getText().toString().startsWith("wrap-anchor="))).getText().toString();
         String[] edges = report.replace("wrap-anchor=", "").replace("wrap-start=", "").replace("wrap-end=", "").split(";");
@@ -58,26 +55,31 @@ final class TextEditLineDeviceChecks {
         if (start <= 0 || start >= anchor || end <= anchor || end >= TrackpadEditorActivity.WRAPPED_TEXT.length())
             throw new AssertionError("Synthetic paragraph did not wrap around the initial cursor: " + report);
         setSelection(anchor);
-        tap("移到行首");
-        selection(start, start);
+        tap("移到开头");
+        selection(0, 0);
         setSelection(anchor);
-        tap("移到行尾");
-        selection(end, end);
+        tap("移到结尾");
+        selection(TrackpadEditorActivity.WRAPPED_TEXT.length(), TrackpadEditorActivity.WRAPPED_TEXT.length());
 
         open("terminal");
-        t.stage = "line boundaries reach a terminal without surrounding text";
-        tap("移到行首");
-        t.await(t.field("trackpad-status").and(node -> DeviceSmoke.equalsText("0:122:0,1:122:0", node.getText())));
+        t.stage = "document boundaries reach a terminal without surrounding text";
+        tap("移到开头");
+        t.await(t.field("trackpad-status").and(node -> DeviceSmoke.equalsText("0:122:12288,1:122:12288", node.getText())));
         tap("选择模式");
-        tap("移到行尾");
+        tap("移到结尾");
         t.await(t.field("trackpad-status").and(node -> node.getText() != null
-            && node.getText().toString().contains("0:123:65,1:123:65")));
+            && node.getText().toString().contains("0:123:12353,1:123:12353")));
 
         open("edit");
         t.stage = "return short tap inserts exactly one newline";
         setSelection(TrackpadEditorActivity.TEXT.length());
         Rect key = returnBounds();
         gesture(key, false);
+        text(TrackpadEditorActivity.TEXT + "\n");
+        t.stage = "header undo and redo reach the current editor";
+        tap("撤销");
+        text(TrackpadEditorActivity.TEXT);
+        tap("重做");
         text(TrackpadEditorActivity.TEXT + "\n");
         t.stage = "return slide out cancels both actions";
         key = returnBounds();
@@ -108,7 +110,14 @@ final class TextEditLineDeviceChecks {
 
     private void tap(String description) throws Exception {
         t.dropStaleNodes();
-        t.tap(t.described(description).and(AccessibilityNodeInfo::isClickable));
+        t.tap(t.described(description).and(AccessibilityNodeInfo::isClickable)
+            .and(node -> description.equals("文本编辑") || panelControl(node)));
+    }
+
+    static boolean panelControl(AccessibilityNodeInfo node) {
+        for (AccessibilityNodeInfo parent = node.getParent(); parent != null; parent = parent.getParent())
+            if (DeviceSmoke.equalsText("文本编辑面板", parent.getContentDescription())) return true;
+        return false;
     }
 
     private void setSelection(int at) {

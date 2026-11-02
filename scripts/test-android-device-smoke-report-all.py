@@ -240,7 +240,7 @@ def main() -> None:
         run.expect(run.code == 1 and "five checks in a row" in run.stopped_line(), "连续五项失败应停下并说明原因")
         run.expect(len(run.failed_lines()) == 5 and not run.ran("ClipboardSegmentActionsDeviceSmoke:phrase-notice"), "第五项失败后不应再跑后面的检查")
 
-        run = Run(base, "core-separated", ["--core"], sdk="28", fail="BatchCompositionDeviceSmoke CompositionRestartDeviceSmoke ClipboardSegmentActionsDeviceSmoke CandidateCanvasDeviceSmoke TextEditRecentClipboardDeviceSmoke:trackpad")
+        run = Run(base, "core-separated", ["--core"], sdk="28", fail="BatchCompositionDeviceSmoke CompositionRestartDeviceSmoke ClipboardSegmentActionsDeviceSmoke CandidateCanvasDeviceSmoke TextEditRecentClipboardDeviceSmoke:layout-only")
         run.expect(run.code == 1 and run.stopped_line() == "" and len(run.failed_lines()) == 5, "不连续的失败不触发连续失败上限")
         run.expect(run.ran_script("clipboard-edit-lifecycle"), "核心套件失败后仍应跑到剪贴板保存生命周期")
 

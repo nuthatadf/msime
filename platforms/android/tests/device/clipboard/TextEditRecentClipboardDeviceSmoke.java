@@ -19,26 +19,25 @@ import org.json.JSONObject;
 public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
     private boolean spaceCopyOnly;
     private boolean layoutOnly;
-    private boolean trackpadOnly;
+    private boolean appearanceOnly;
     private static final String TEXT = "synthetic-copy-alpha";
     private static final String PREVIEW = "粘贴最近复制的内容：" + TEXT;
 
     @Override public void onCreate(Bundle arguments) {
         spaceCopyOnly = arguments != null && "true".equals(arguments.getString("space-copy-only"));
         layoutOnly = arguments != null && "true".equals(arguments.getString("layout-only"));
-        trackpadOnly = arguments != null && "true".equals(arguments.getString("trackpad"));
+        appearanceOnly = arguments != null && "true".equals(arguments.getString("appearance-only"));
         super.onCreate(arguments);
     }
 
     @Override protected String successDescription() {
-        if (layoutOnly) return "saved/cancelled/reset side order and line boundaries, return long press and all seventeen keys in portrait, landscape, one-handed and floating modes";
-        if (trackpadOnly) return "text trackpad through system editors, selection, temporary mode and key receiver";
+        if (appearanceOnly) return "selection text inset and same-device light/dark toolbar, header and floating editor rendering";
+        if (layoutOnly) return "saved/cancelled/reset side order and document boundaries, return long press and all fifteen keys in portrait, landscape, one-handed and floating modes";
         return spaceCopyOnly ? "space upward copy, editor permissions, selection restoration and clipboard preview"
             : "fixed editor grid, saved/cancelled/reset side order, shortcuts, selection and clipboard preview";
     }
 
     @Override protected void runChecks() throws Exception {
-        if (trackpadOnly) { new TextTrackpadDeviceChecks(this).run(); return; }
         File root = getTargetContext().getFilesDir().getCanonicalFile();
         JSONObject options = read(new File(root, "runtime-options.json"));
         File preferences = new File(options.getString("preferences_directory"), "preferences.json").getCanonicalFile();
@@ -61,8 +60,37 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
         try {
             save(preferences, ++revision, values);
             publish(local, settings.toString().getBytes(StandardCharsets.UTF_8));
+            if (appearanceOnly) {
+                TextEditPanelAppearanceChecks.selectionInsets(this);
+                String night = shellText("cmd uimode night").trim();
+                try {
+                    values.put("theme", "system").put("global_theme", "system")
+                        .put("screen_keyboard_theme", "follow")
+                        .put("touch_text_edit_button_order", defaultOrder());
+                    values.remove("android_keyboard_skin_light");
+                    values.remove("android_keyboard_skin_dark");
+                    for (String mode : new String[] {"light", "dark"}) {
+                        stage = "same-device text editor appearance " + mode;
+                        shellDiscard("cmd uimode night " + (mode.equals("dark") ? "yes" : "no"));
+                        save(preferences, ++revision, values);
+                        settings.getJSONObject("settings").put("platform.android.floating_keyboard", false);
+                        publish(local, settings.toString().getBytes(StandardCharsets.UTF_8));
+                        openPanel();
+                        checkEditorNavigation(mode);
+                        settings.getJSONObject("settings").put("platform.android.floating_keyboard", true);
+                        publish(local, settings.toString().getBytes(StandardCharsets.UTF_8));
+                        openPanel("floating");
+                        checkEditorNavigation("floating-" + mode);
+                    }
+                } finally {
+                    shellDiscard("cmd uimode night " + (night.contains("yes") ? "yes" : night.contains("no") ? "no" : "auto"));
+                }
+                return;
+            }
             if (layoutOnly) {
-                checkOrderSettings(preferences, values, revision);
+                revision = checkOrderSettings(preferences, values, revision);
+                values.put("touch_text_edit_button_order", defaultOrder());
+                save(preferences, ++revision, values);
                 new TextEditLineDeviceChecks(this).run();
                 checkLayoutModes(local, settings);
                 return;
@@ -87,7 +115,7 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
                     if (keyBounds.isEmpty() || !panelBounds.contains(keyBounds))
                         throw new AssertionError("Editor key is outside panel: " + description);
                 }
-                Rect pasted = bounds(await(described("粘贴")));
+                Rect pasted = bounds(await(described("剪切")));
                 Rect copied = bounds(await(described("复制")));
                 if (pasted.top >= copied.top || pasted.left != copied.left)
                     throw new AssertionError("Keyboard ignored the saved side order");
@@ -110,12 +138,13 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
             await(described("取消选择").and(node -> equalsText("取消选择", node.getText()) && node.isSelected()));
             stage = "selection key face fills with accent";
             settledKeyFace("取消选择", face -> face != idleFace);
+            captureLayout("selection");
             click("光标左移");
             await(field("msime-test-plain").and(node -> node.getTextSelectionStart() != node.getTextSelectionEnd()));
             stage = "selection key face stays filled while extending";
             settledKeyFace("取消选择", face -> face != idleFace);
             click("取消选择");
-            await(described("选择模式").and(node -> equalsText("选择", node.getText()) && !node.isSelected()));
+            await(described("选择模式").and(node -> equalsText("开始选择", node.getText()) && !node.isSelected()));
             stage = "selection key face restores";
             settledKeyFace("选择模式", face -> face == idleFace);
             click("光标右移");
@@ -126,6 +155,7 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
             click("复制");
             stage = "preview while panel stays open";
             await(described(PREVIEW));
+            captureLayout("recent-copy");
             if (!before.equals(bounds(awaitStableBounds(described("文本编辑面板")))))
                 throw new AssertionError("Copy moved text edit panel");
             stage = "cut using panel";
@@ -175,6 +205,7 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
             click("全选");
             click("复制");
             absent(described("最近复制"));
+            new TextEditHistoryDeviceChecks(this).run();
         } finally {
             shellDiscard("am start -W -n app.msime.android/app.msime.android.home.HomeActivity");
             restore(preferences, original);
@@ -212,7 +243,7 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
                 await(field("msime-test-plain").and(node -> equalsText(TEXT + " ", node.getText())));
                 click("退格");
                 await(field("msime-test-plain").and(node -> equalsText(TEXT, node.getText())));
-                checkTrackpadCoexistence(mode);
+                checkEditorNavigation(mode);
             }
         } finally {
             restoreSystem("user_rotation", rotation);
@@ -225,37 +256,37 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
             : "settings delete system " + key);
     }
 
-    /** 与已合并的触控板共存；切换移动区不能遮住侧边操作与文档边界。 */
-    private void checkTrackpadCoexistence(String mode) throws Exception {
-        click("切换为触控板");
-        Rect pad = bounds(awaitStableBounds(describedPrefix("文本编辑触控板")));
-        Rect panel = bounds(awaitStableBounds(described("文本编辑面板")));
-        if (pad.isEmpty() || !panel.contains(pad))
-            throw new AssertionError("Trackpad is outside " + mode + " panel");
-        for (String description : new String[] {"全选", "复制", "剪切", "粘贴", "移到开头", "移到结尾",
-                "退格", "打开数字键盘", "插入空格", "插入换行，长按打开符号", "选择模式", "移到行首", "移到行尾"}) {
-            Rect key = bounds(awaitStableBounds(described(description).and(AccessibilityNodeInfo::isClickable)));
-            if (key.isEmpty() || !panel.contains(key) || Rect.intersects(pad, key))
-                throw new AssertionError("Trackpad covered editor key in " + mode + ": " + description);
-        }
-        click("切换为方向键");
-        await(described("光标左移"));
+    /** 顶部导航与精简后的所有动作可达，文档边界排与末排侧键严格等高。 */
+    private void checkEditorNavigation(String mode) throws Exception {
+        Rect start = bounds(awaitStableBounds(described("移到开头")));
+        Rect returned = bounds(awaitStableBounds(described("插入换行，长按打开符号")));
+        if (start.top != returned.top || start.bottom != returned.bottom)
+            throw new AssertionError("Document edge row has a different height in " + mode);
+        await(described("返回键盘").and(TextEditLineDeviceChecks::panelControl));
+        await(described("撤销").and(TextEditLineDeviceChecks::panelControl));
+        await(described("重做").and(TextEditLineDeviceChecks::panelControl));
+        absent(described("切换为触控板"));
+        for (String removed : new String[] {"选择当前行", "移到行首", "移到行尾", "打开符号面板"})
+            absent(described(removed).and(TextEditLineDeviceChecks::panelControl));
         checkAllKeyBounds(mode);
     }
 
     private void checkAllKeyBounds(String mode) throws Exception {
         Rect panel = bounds(awaitStableBounds(described("文本编辑面板")));
-        Rect[] keys = new Rect[17];
+        captureLayout(mode);
+        Rect[] keys = new Rect[15];
         String[] descriptions = {"光标左移", "光标上移", "选择模式", "光标下移", "光标右移",
-            "全选", "复制", "剪切", "粘贴", "移到开头", "移到结尾", "退格", "打开数字键盘", "插入空格", "插入换行，长按打开符号", "移到行首", "移到行尾"};
+            "全选", "复制", "剪切", "粘贴", "移到开头", "移到结尾", "退格", "打开数字键盘", "插入空格", "插入换行，长按打开符号"};
         int minimumWidth = Integer.MAX_VALUE, minimumHeight = Integer.MAX_VALUE;
         for (int index = 0; index < descriptions.length; index++) {
-            keys[index] = bounds(awaitStableBounds(described(descriptions[index]).and(AccessibilityNodeInfo::isClickable)));
+            keys[index] = bounds(awaitStableBounds(described(descriptions[index])
+                .and(TextEditLineDeviceChecks::panelControl).and(AccessibilityNodeInfo::isClickable)));
             if (keys[index].isEmpty() || !panel.contains(keys[index]))
                 throw new AssertionError("Editor key is outside " + mode + " panel: " + descriptions[index]);
             for (int previous = 0; previous < index; previous++) {
                 if (Rect.intersects(keys[index], keys[previous]))
-                    throw new AssertionError("Editor keys overlap in " + mode + " panel");
+                    throw new AssertionError("Editor keys overlap in " + mode + " panel: "
+                        + descriptions[index] + keys[index] + " and " + descriptions[previous] + keys[previous]);
             }
             minimumWidth = Math.min(minimumWidth, keys[index].width());
             minimumHeight = Math.min(minimumHeight, keys[index].height());
@@ -264,6 +295,9 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
         // 只记录合成窗口的几何尺寸；可见与可点击不等于已验收触控舒适度。
         System.out.println("Text editor layout " + mode + ": panel=" + panel.width() + "x" + panel.height()
             + "px, minimum key=" + minimumWidth / density + "x" + minimumHeight / density + "dp");
+    }
+
+    private void captureLayout(String mode) throws Exception {
         android.graphics.Bitmap image = automation.takeScreenshot();
         if (image == null) throw new AssertionError("Synthetic editor screenshot unavailable");
         try (var output = new java.io.FileOutputStream(new File(getTargetContext().getExternalFilesDir(null),
@@ -275,9 +309,7 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
 
     /** 使用真实设置页保存、取消、重置和重开，再由键盘进程读取同一顺序。 */
     private long checkOrderSettings(File preferences, JSONObject values, long revision) throws Exception {
-        Class<?> nativeClient = getTargetContext().getClassLoader().loadClass("app.msime.android.NativeClient");
-        JSONObject response = new JSONObject((String) nativeClient.getMethod("defaultPreferences").invoke(null));
-        JSONArray defaults = response.getJSONObject("value").getJSONArray("touch_text_edit_button_order");
+        JSONArray defaults = defaultOrder();
         values.put("touch_text_edit_button_order", defaults);
         save(preferences, ++revision, values);
         byte[] beforeCancel = Files.readAllBytes(preferences.toPath());
@@ -290,14 +322,15 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
         moveOrderRowDown("复制");
         tap(node -> equalsText("保存", node.getText()) && node.isClickable());
         JSONArray changed = new JSONArray(defaults.toString());
-        Object first = changed.get(0);
+        Object copied = changed.get(0);
         changed.put(0, changed.get(1));
-        changed.put(1, first);
+        changed.put(1, copied);
         awaitOrder(preferences, changed);
         openOrderSettings();
-        await(node -> equalsText("1. 粘贴", node.getText()));
+        await(node -> equalsText("1. 剪切", node.getText()));
         tap(node -> equalsText("重置", node.getText()) && node.isClickable());
         await(node -> equalsText("1. 复制", node.getText()));
+        await(node -> equalsText("2. 剪切", node.getText()));
         tap(node -> equalsText("保存", node.getText()) && node.isClickable());
         awaitOrder(preferences, defaults);
         openOrderSettings();
@@ -306,6 +339,12 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
         awaitOrder(preferences, changed);
         values.put("touch_text_edit_button_order", changed);
         return read(preferences).getLong("revision");
+    }
+
+    private JSONArray defaultOrder() throws Exception {
+        Class<?> nativeClient = getTargetContext().getClassLoader().loadClass("app.msime.android.NativeClient");
+        JSONObject response = new JSONObject((String) nativeClient.getMethod("defaultPreferences").invoke(null));
+        return response.getJSONObject("value").getJSONArray("touch_text_edit_button_order");
     }
 
     private void openOrderSettings() throws Exception {
@@ -369,7 +408,9 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
 
     private void click(String description) throws Exception {
         dropStaleNodes();
-        tap(described(description).and(AccessibilityNodeInfo::isClickable).and(AccessibilityNodeInfo::isEnabled));
+        boolean editing = !description.equals("文本编辑") && visible(described("文本编辑面板"));
+        tap(described(description).and(AccessibilityNodeInfo::isClickable).and(AccessibilityNodeInfo::isEnabled)
+            .and(node -> !editing || TextEditLineDeviceChecks.panelControl(node)));
     }
 
     private void absent(Predicate<AccessibilityNodeInfo> match) {

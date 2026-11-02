@@ -277,6 +277,8 @@ platforms/android/tests/device/keyboard/OcrProductDeviceSmoke.java
 platforms/android/tests/device/keyboard/OcrDocumentsProvider.java
 platforms/android/gradle-app/ocr-fixture/app/msime/ocr/fixture/SyntheticOcrFixture.java
 platforms/android/tests/device/keyboard/TextEditLineDeviceChecks.java
+platforms/android/tests/device/keyboard/TextEditHistoryDeviceChecks.java
+platforms/android/tests/device/keyboard/TextEditPanelAppearanceChecks.java
 platforms/android/tests/device/settings/OnboardingDeviceSmoke.java
 platforms/android/tests/device/keyboard/AboutEasterEggDeviceSmoke.java
 

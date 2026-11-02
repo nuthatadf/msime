@@ -61,7 +61,6 @@ final class ImeToolbar {
             s.clipboardShortcutButton, s.skinButton, s.schemeButton, s.floatingShortcutButton,
             s.textEditShortcutButton, s.undoShortcutButton, s.redoShortcutButton, s.voiceShortcutButton, s.randomDigitsShortcutButton};
         for (Button button : shortcutButtons) bindEditor(button);
-        s.imeTextEditPanel.bindShortcut(s.textEditShortcutButton);
         for (Button button : new Button[] {s.moreButton, s.symbolShortcutButton, dismissButton}) {
             bindEditor(button);
             if (button.getParent() instanceof LinearLayout parent) parent.removeView(button);
@@ -338,10 +337,15 @@ final class ImeToolbar {
             s.pixels(READING_ROW_DP)));
     }
 
+    /** 仅表示允许发送历史快捷键；公共输入连接没有编辑器撤销栈的只读查询。 */
+    boolean canDispatchHistory() {
+        return s.connection != null && !EditorPolicy.password(s.editorInputType);
+    }
+
     /** 历史由编辑器持有；仅发送一次快捷键，不采集文本，也不以投递成功冒充已撤销。 */
-    private void performHistory(boolean redo) {
+    void performHistory(boolean redo) {
         InputConnection target = s.connection;
-        if (target == null || EditorPolicy.password(s.editorInputType)) return;
+        if (!canDispatchHistory()) return;
         if (s.session != 0 && s.hasEngineComposition()) s.command(2);
         if (s.connection != target) return;
         try {
@@ -488,11 +492,15 @@ final class ImeToolbar {
         if (s.recentClipRow == null || s.recentClipButton == null) return;
         boolean visible = text != null || image;
         ViewPolicy.setVisible(s.recentClipRow, visible);
-        if (!visible) return;
+        if (!visible) {
+            s.imeTextEditPanel.refreshFooter();
+            return;
+        }
         recentClipCollapseButton.setContentDescription(s.anyToolbarPanelOpen() ? "返回键盘" : "收起键盘");
         String preview = image ? ClipboardImagePolicy.LABEL : RecentClipboardSuggestion.preview(text);
         if (!preview.contentEquals(s.recentClipButton.getText())) s.recentClipButton.setText(preview);
         s.recentClipButton.setContentDescription(image ? "发送最近复制的图片" : "粘贴最近复制的内容：" + preview);
+        s.imeTextEditPanel.refreshFooter();
         String action = s.recentClipQuickAction(image);
         ViewPolicy.setVisible(recentClipActionButton, action != null);
         if (action == null) return;
@@ -553,6 +561,7 @@ final class ImeToolbar {
         if (s.keyboardAdjustOverlay != null) s.keyboardAdjustOverlay.setAccent(Color.parseColor(skin.accent()));
         if (s.floatingBar != null) s.floatingBar.setColors(foregroundColor);
         s.imeBottomBar.style(iconColor, activeIconColor, activeBackgroundColor);
+        s.imeTextEditPanel.styleShortcuts(iconColor, activeIconColor, activeBackgroundColor);
         if (s.preedit != null) {
             ViewPolicy.setTextColor(s.preedit, s.candidateAppearance.externalSkin()
                 && ViewPolicy.isVisible(s.candidateViewport) ? s.candidateAppearance.preeditText() : hintColor);

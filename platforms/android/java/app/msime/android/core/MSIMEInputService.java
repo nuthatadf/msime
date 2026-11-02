@@ -1179,7 +1179,6 @@ public final class MSIMEInputService extends InputMethodService {
             ? (preferences == null ? null : preferences.optJSONObject("touch_toolbar"))
             : rememberedToolbar;
         applyToolbarPreferences(preferences, toolbar);
-        if (imeTextEditPanel != null) imeTextEditPanel.applyPreferences(preferences, live);
         applyVoicePreferences(preferences);
         applyAiPreferences(preferences);
         applyClipboardPreference(preferences, source);
@@ -3996,7 +3995,6 @@ public final class MSIMEInputService extends InputMethodService {
         // 「增强」开着而逐键重排模型没装（多半是缺省或同步来的「增强」，用户从没在设置里选过）：排一个只在不按流量计费的网络上跑的后台下载，由主进程去下；每个进程只排一次，这里不联网。
         RerankModelDownload.scheduleIfWanted(this, preferences, installedResourcePackIds);
         refreshModeSkinLibrary(preferences);
-        imeTextEditPanel.applyPreferences(preferences);
         if (!clipboardHistoryEnabled && clipboardHistory != null) {
             clipboardHistory.clearQuietly();
             // The cloud half does not depend on this switch; only a panel left with nothing to show closes.
@@ -11303,12 +11301,19 @@ public final class MSIMEInputService extends InputMethodService {
         int top = (parent == null ? 0 : parent.getTop()) + region.getBottom();
         for (View overlay : new View[] {moreToolsScroll, expandedCandidateCanvas, imeNineKeyPanel.root(),
                 phraseScroll, emojiPanel, symbolPanel, clipboardSurface, skinScroll, schemeScroll,
-                aiPolishContainer, textEditPanel}) {
+                aiPolishContainer}) {
             if (overlay == null) continue;
             if (!(overlay.getLayoutParams() instanceof FrameLayout.LayoutParams params)
                     || params.topMargin == top) continue;
             params.topMargin = top;
             overlay.post(() -> overlay.setLayoutParams(params));
+        }
+        // 编辑面板自带返回、标题与历史操作，覆盖共用工具栏，避免重复占用一行。
+        int editTop = (parent == null ? 0 : parent.getTop()) + region.getTop();
+        if (textEditPanel != null && textEditPanel.getLayoutParams() instanceof FrameLayout.LayoutParams params
+                && params.topMargin != editTop) {
+            params.topMargin = editTop;
+            textEditPanel.post(() -> textEditPanel.setLayoutParams(params));
         }
     }
 
@@ -11927,12 +11932,12 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     /**
-     * 统一维护物理键盘候选栏与触控板放大镜的光标位置订阅。任一消费者需要时持续报告并立即报一次，只有两者都结束才撤回。物理键盘需在第一次按键前订阅，避免第一次组字因位置尚未到达而退回底部；每次 render 开头调用，状态没变时不重复请求。
+     * 维护物理键盘候选栏的光标位置订阅，在第一次按键前订阅，避免首次组字因位置尚未到达而退回底部；每次 render 开头调用，状态没变时不重复请求。
      */
     void synchronizeCursorUpdates() {
         InputConnection current = connection;
-        boolean wanted = current != null && ((caretCandidates && EditorPolicy.useEngine(editorInputType)
-            && (hardwareKeyboardAttached || hardwareKeyboardMode)) || imeTextEditPanel.needsCursorUpdates());
+        boolean wanted = current != null && caretCandidates && EditorPolicy.useEngine(editorInputType)
+            && (hardwareKeyboardAttached || hardwareKeyboardMode);
         boolean requested = caretAnchorConnection != null && caretAnchorConnection == current;
         if (wanted == requested) return;
         if (requested) InputConnectionGuard.requestCursorUpdates(current, 0);
@@ -11950,7 +11955,6 @@ public final class MSIMEInputService extends InputMethodService {
      */
     @Override public void onUpdateCursorAnchorInfo(android.view.inputmethod.CursorAnchorInfo info) {
         super.onUpdateCursorAnchorInfo(info);
-        imeTextEditPanel.cursorAnchor(info);
         if (info == null || !caretAnchorsAvailable()) return;
         int composingStart = info.getComposingTextStart();
         android.graphics.RectF character = composingStart < 0 ? null : info.getCharacterBounds(composingStart);
@@ -12649,11 +12653,11 @@ public final class MSIMEInputService extends InputMethodService {
         }
         if (undoShortcutButton != null) {
             ViewPolicy.setVisible(undoShortcutButton, toolbarUndo);
-            ViewPolicy.setEnabled(undoShortcutButton, connection != null && !EditorPolicy.password(editorInputType));
+            ViewPolicy.setEnabled(undoShortcutButton, imeToolbar.canDispatchHistory());
         }
         if (redoShortcutButton != null) {
             ViewPolicy.setVisible(redoShortcutButton, toolbarRedo);
-            ViewPolicy.setEnabled(redoShortcutButton, connection != null && !EditorPolicy.password(editorInputType));
+            ViewPolicy.setEnabled(redoShortcutButton, imeToolbar.canDispatchHistory());
         }
         if (textEditShortcutButton != null) {
             ViewPolicy.setVisible(textEditShortcutButton, toolbarTextEdit);
