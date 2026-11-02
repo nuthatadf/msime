@@ -39,7 +39,7 @@ public final class TextEditPanelModelSmoke {
             TextEditPanelModel.mergeVisibleOrder(legacy, List.of(Action.COPY, Action.COPY));
             throw new AssertionError("重复和缺项排列必须被拒绝");
         } catch (IllegalArgumentException expected) { }
-        for (int[] size : new int[][] {{240, 160}, {320, 199}, {401, 239}, {600, 301}, {1200, 160}}) {
+        for (int[] size : new int[][] {{240, 160}, {320, 199}, {402, 238}, {401, 239}, {600, 301}, {1200, 160}}) {
             List<Key> keys = TextEditPanelModel.keys(order);
             for (int index = 0; index < keys.size(); index++) {
                 var bounds = TextEditPanelModel.bounds(keys.get(index), size[0], size[1], 3);
@@ -160,18 +160,24 @@ public final class TextEditPanelModelSmoke {
             if (key.column() == 0) side[key.row()] = TextEditPanelModel.bounds(key, width, height, margin);
         var panel = TextEditPanelModel.centralBounds(width, height, margin);
         check(panel.top() == side[0].top() && panel.bottom() == side[3].bottom(), "中央外框与侧栏两端齐平");
-        for (int row = 1; row <= 2; row++)
-            check(Math.abs(TextEditPanelModel.seam(row, height, margin)
-                - (side[row - 1].bottom() + side[row].top()) / 2f) <= .5f, "前两条分隔线对齐间隙中线");
+        for (int row = 1; row <= 3; row++)
+            check(TextEditPanelModel.seam(row, height, margin) == side[row].top(),
+                "三条分隔线均对齐下一排侧键上边");
+        var up = TextEditPanelModel.bounds(TextEditPanelModel.key(Action.UP), width, height, margin);
+        var select = TextEditPanelModel.bounds(TextEditPanelModel.key(Action.SELECT), width, height, margin);
+        var down = TextEditPanelModel.bounds(TextEditPanelModel.key(Action.DOWN), width, height, margin);
+        int shortest = Math.min(up.height(), Math.min(select.height(), down.height()));
+        int tallest = Math.max(up.height(), Math.max(select.height(), down.height()));
+        check(tallest - shortest <= 1, "上下与选择等高，只允许整数像素舍入差");
         for (Key key : keys) {
             if (!TextEditPanelModel.isCentral(key)) continue;
             var bounds = TextEditPanelModel.bounds(key, width, height, margin);
             if (key.action() == Action.DOCUMENT_START || key.action() == Action.DOCUMENT_END)
                 check(bounds.top() == side[3].top() && bounds.height() == side[3].height(),
                     "文首尾排对齐末排侧键上边，视觉高度不能多出半格间隙");
-            int row = key.action() == Action.LEFT || key.action() == Action.RIGHT ? 1 : key.row();
-            check(Math.abs(TextEditPanelModel.contentCenterY(key, height)
-                - (side[row].top() + side[row].bottom()) / 2f) <= .5f, "中央图标对齐侧键行中心");
+            if (key.action() == Action.LEFT || key.action() == Action.RIGHT)
+                check(Math.abs((bounds.top() + bounds.bottom()) / 2f
+                    - (select.top() + select.bottom()) / 2f) <= .5f, "左右与选择的单元格中心同轴");
         }
     }
 

@@ -9,7 +9,6 @@ public final class TextEditIconButton extends TextEditPanelButton {
     private final KeyboardIconPaths.Icon icon;
     private final float rotation;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private float centerOffset;
     private float sizeDp = 24;
 
     public TextEditIconButton(Context context, KeyboardIconPaths.Icon icon, float rotation) {
@@ -22,15 +21,12 @@ public final class TextEditIconButton extends TextEditPanelButton {
 
     public void setGlyphSize(float dp) { sizeDp = dp; }
 
-    public void setCenterOffset(float offset) { centerOffset = offset; }
-
     @Override protected void onDraw(Canvas canvas) {
         drawPanelState(canvas);
         float size = Math.min(Math.min(getWidth(), getHeight()), DimensionPolicy.floatPixels(getContext(), sizeDp));
         int color = getCurrentTextColor();
         if (!isEnabled()) color = ColorPolicy.withAlpha(color, 96f / 255f);
         int saved = canvas.save();
-        canvas.translate(0, centerOffset);
         canvas.rotate(rotation, getWidth() / 2f, getHeight() / 2f);
         KeyboardIconPaths.draw(canvas, paint, icon, (getWidth() - size) / 2f,
             (getHeight() - size) / 2f, size, color);

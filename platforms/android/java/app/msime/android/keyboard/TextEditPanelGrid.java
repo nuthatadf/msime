@@ -65,9 +65,6 @@ public final class TextEditPanelGrid extends ViewGroup {
         for (int index = 0; index < keys.size(); index++) {
             TextEditPanelModel.Bounds bounds = TextEditPanelModel.bounds(keys.get(index), right - left, bottom - top, margin);
             getChildAt(index).layout(bounds.left(), bounds.top(), bounds.right(), bounds.bottom());
-            if (getChildAt(index) instanceof TextEditIconButton icon && TextEditPanelModel.isCentral(keys.get(index)))
-                icon.setCenterOffset(TextEditPanelModel.contentCenterY(keys.get(index), bottom - top)
-                    - (bounds.top() + bounds.bottom()) / 2f);
         }
     }
 

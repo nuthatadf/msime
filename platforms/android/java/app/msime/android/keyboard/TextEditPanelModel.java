@@ -128,18 +128,11 @@ public final class TextEditPanelModel {
             width * 8 / COLUMNS - inset, height - inset);
     }
 
-    /** 前两条缝对齐侧键间隙中线，末条缝对齐末排侧键上边，保证首尾排等高。 */
+    /** 三条缝均对齐下一排侧键上边；移动区三排等高，文首尾仍与末排侧键等高。 */
     public static int seam(int row, int height, int margin) {
         int inset = Math.min(Math.max(0, margin), Math.max(0, (height / ROWS - 1) / 2));
-        if (row == 0) return inset;
         if (row == ROWS) return height - inset;
-        return height * row / ROWS + (row == ROWS - 1 ? inset : 0);
-    }
-
-    /** 图标沿侧栏行中心定位，点击区域仍延伸到相邻分隔线。 */
-    public static float contentCenterY(Key key, int height) {
-        int row = key.action() == Action.LEFT || key.action() == Action.RIGHT ? 1 : key.row();
-        return (height * row / ROWS + height * (row + 1) / ROWS) / 2f;
+        return height * row / ROWS + inset;
     }
 
     /** 交给编辑器的按键码；不走按键事件的动作返回 {@link KeyEvent#KEYCODE_UNKNOWN}。 */

@@ -291,6 +291,13 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
             minimumWidth = Math.min(minimumWidth, keys[index].width());
             minimumHeight = Math.min(minimumHeight, keys[index].height());
         }
+        int shortestDirection = Math.min(keys[1].height(), Math.min(keys[2].height(), keys[3].height()));
+        int tallestDirection = Math.max(keys[1].height(), Math.max(keys[2].height(), keys[3].height()));
+        if (tallestDirection - shortestDirection > 1)
+            throw new AssertionError("Up, select and down have unequal heights in " + mode);
+        if (Math.abs(keys[0].exactCenterY() - keys[2].exactCenterY()) > .5f
+                || Math.abs(keys[4].exactCenterY() - keys[2].exactCenterY()) > .5f)
+            throw new AssertionError("Left, select and right are not centered together in " + mode);
         float density = getTargetContext().getResources().getDisplayMetrics().density;
         // 只记录合成窗口的几何尺寸；可见与可点击不等于已验收触控舒适度。
         System.out.println("Text editor layout " + mode + ": panel=" + panel.width() + "x" + panel.height()
