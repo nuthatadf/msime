@@ -10781,7 +10781,9 @@ public final class MSIMEInputService extends InputMethodService {
                 View child = getChildAt(index);
                 if (fullBleed.contains(child)
                         || !(child.getLayoutParams() instanceof FrameLayout.LayoutParams params)) continue;
-                params.bottomMargin = inset;
+                params.bottomMargin = getContext() instanceof MSIMEInputService service
+                        && child == service.textEditPanel
+                    ? service.imeBottomBar.textEditBottomInset(inset) : inset;
             }
             super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
         }

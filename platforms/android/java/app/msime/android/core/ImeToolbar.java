@@ -108,6 +108,7 @@ final class ImeToolbar {
             : ToolbarSizePolicy.followedPercent(rowHeightPx, followedButton, designRowPx);
         int edgeWidth = s.pixels(ToolbarSizePolicy.buttonWidthDp(44, percent));
         int middleWidth = s.pixels(ToolbarSizePolicy.buttonWidthDp(40, percent));
+        s.imeTextEditPanel.resizeHeader(rowHeightPx, drawPercent, edgeWidth);
         // 26 键长空格样式的「符」和品牌键、收起键一样是两端的固定按钮，一起缩放，否则矮行里只有它伸出去被裁掉。
         for (Button button : new Button[] {s.moreButton, s.symbolShortcutButton, s.dismissShortcutButton}) {
             if (button == null) continue;

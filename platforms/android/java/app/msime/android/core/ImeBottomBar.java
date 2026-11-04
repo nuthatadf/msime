@@ -47,9 +47,6 @@ final class ImeBottomBar {
 
     /** 建好底栏并叠到外框底部；每次 onCreateInputView 新建控件后调用一次。 */
     void build(MSIMEInputService.PanelSurface surface) {
-        bar = LayoutPolicy.row(s);
-        ViewPolicy.setCenteredVertically(bar);
-        bar.setContentDescription("键盘底栏");
         // 系统的输入法选择框，与 Android 自己画在导航栏里的切换按钮一致；只装了一个别的输入法时也能用，组字不结束，理由见 bindInputMethodPicker。
         switchButton = new KeyboardShortcutButton(s, KeyboardShortcutIconPolicy.Icon.GLOBE);
         ViewPolicy.setAllCapsFalse(switchButton);
@@ -58,13 +55,11 @@ final class ImeBottomBar {
         s.keyId(switchButton, "SoftGlobe");
         s.imeStyler.styleButton(switchButton, true);
         s.bindCountedAction(switchButton, this::showInputMethodPicker);
-        bar.addView(switchButton, buttonParams());
         track = new TextView(s);
         ViewPolicy.setCentered(track);
         KeyboardTypographyPolicy.setKeyTextSize(track, 12);
         track.setContentDescription("左右滑动移动光标");
         bindCursorTrack(track);
-        bar.addView(track, LayoutPolicy.weightedMatchParentParams(1));
         clipboardButton = new KeyboardShortcutButton(s, KeyboardShortcutIconPolicy.Icon.CLIPBOARD);
         ViewPolicy.setAllCapsFalse(clipboardButton);
         clipboardButton.setText("剪贴板");
@@ -72,7 +67,8 @@ final class ImeBottomBar {
         s.imeStyler.styleButton(clipboardButton, true);
         s.bindCountedAction(clipboardButton,
             s.imeToolbar.panelToggle(() -> s.clipboardSurface, s.imePanels::showClipboardHistory));
-        bar.addView(clipboardButton, buttonParams());
+        bar = new KeyboardBottomBarLayout(s, switchButton, track, clipboardButton);
+        bar.setContentDescription("键盘底栏");
         ViewPolicy.hide(bar);
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, s.pixels(KeyboardBottomBarPolicy.BAR_HEIGHT_DP),
@@ -80,14 +76,6 @@ final class ImeBottomBar {
         // 外框会把非 fullBleed 子视图的底边距改成键盘列的底部内边距，底栏的底边距由这里自己定。
         surface.fullBleed.add(bar);
         surface.addView(bar, params);
-    }
-
-    private LinearLayout.LayoutParams buttonParams() {
-        LinearLayout.LayoutParams params = LayoutPolicy.linearParamsPx(s.pixels(56),
-            LinearLayout.LayoutParams.MATCH_PARENT);
-        params.setMarginStart(s.pixels(8));
-        params.setMarginEnd(s.pixels(8));
-        return params;
     }
 
     private void showInputMethodPicker() {
@@ -172,10 +160,21 @@ final class ImeBottomBar {
 
     /** 底栏此刻画不画（{@link KeyboardBottomBarPolicy#shown}）。 */
     boolean shown() {
-        if (bar == null || ViewPolicy.isVisible(s.textEditPanel)) return false;
+        return reservesSpace() && !ViewPolicy.isVisible(s.textEditPanel);
+    }
+
+    /** 编辑面板替换底栏控件时仍保留普通键盘的高度预算。 */
+    private boolean reservesSpace() {
+        if (bar == null) return false;
         return KeyboardBottomBarPolicy.shown(s.localSettings.bool(AndroidLocalSettings.BOTTOM_BAR),
             systemDrawsImeButtons(), navigationKnown, s.floatingDrawn(), s.hardwareKeysCollapsed(), phoneLandscape(),
             DimensionPolicy.fromPixels(s, navigationBottom));
+    }
+
+    /** 编辑面板自己的底栏使用原底栏位置，系统栏与用户额外留白仍让出。 */
+    int textEditBottomInset(int keyboardInset) {
+        return Math.max(0, keyboardInset - (reservesSpace()
+            ? s.pixels(KeyboardBottomBarPolicy.BAR_HEIGHT_DP) : 0));
     }
 
     /** 手机（`smallestScreenWidthDp` < 600）横屏：底栏、底部抬高和「键盘调整」的宽度与位置都不生效。 */
@@ -212,9 +211,9 @@ final class ImeBottomBar {
             ViewPolicy.setPaddingIfChanged(keyboard, 0, 0, 0, 0);
             return;
         }
-        boolean shown = shown();
+        boolean reserved = reservesSpace();
         int bottom = insets.bottom;
-        if (shown) {
+        if (reserved) {
             int margin = KeyboardBottomBarPolicy.barBottomPx(insets.bottom, navigationBottom, gestureBottom);
             if (bar.getLayoutParams() instanceof FrameLayout.LayoutParams params && params.bottomMargin != margin) {
                 params.bottomMargin = margin;
@@ -223,8 +222,8 @@ final class ImeBottomBar {
             bottom = margin + s.pixels(KeyboardBottomBarPolicy.BAR_HEIGHT_DP);
         }
         // 底栏计入目标高度，额外空白只抬高键区，覆盖面板同样让出这段内边距；「键盘调整」期间按预览的抬高。
-        bottom += s.pixels(s.keyboardLiftDp(shown));
-        if (bar != null) ViewPolicy.setVisibleIfChanged(bar, shown);
+        bottom += s.pixels(s.keyboardLiftDp(reserved));
+        if (bar != null) ViewPolicy.setVisibleIfChanged(bar, reserved && !ViewPolicy.isVisible(s.textEditPanel));
         ViewPolicy.setPaddingIfChanged(keyboard, insets.left, insets.top, insets.right, bottom);
     }
 

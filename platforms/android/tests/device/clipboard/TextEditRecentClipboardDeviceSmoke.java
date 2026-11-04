@@ -20,6 +20,13 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
     private boolean spaceCopyOnly;
     private boolean layoutOnly;
     private boolean appearanceOnly;
+    private boolean heightOnly;
+    private boolean headerOnly;
+    private boolean footerOnly;
+    private Rect normalSurfaceBeforeEdit;
+    private Rect normalBottomBarBeforeEdit;
+    private Rect normalSwitchBeforeEdit;
+    private Rect normalClipboardBeforeEdit;
     private static final String TEXT = "synthetic-copy-alpha";
     private static final String PREVIEW = "粘贴最近复制的内容：" + TEXT;
 
@@ -27,10 +34,16 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
         spaceCopyOnly = arguments != null && "true".equals(arguments.getString("space-copy-only"));
         layoutOnly = arguments != null && "true".equals(arguments.getString("layout-only"));
         appearanceOnly = arguments != null && "true".equals(arguments.getString("appearance-only"));
+        heightOnly = arguments != null && "true".equals(arguments.getString("height-only"));
+        headerOnly = arguments != null && "true".equals(arguments.getString("header-only"));
+        footerOnly = arguments != null && "true".equals(arguments.getString("footer-only"));
         super.onCreate(arguments);
     }
 
     @Override protected String successDescription() {
+        if (footerOnly) return "shared footer height and icon bounds match the keyboard and remain fixed during clipboard preview";
+        if (headerOnly) return "text edit header matches the toolbar with followed and explicit sizes in docked and floating modes";
+        if (heightOnly) return "text edit preserves normal keyboard bounds with bottom bar, custom padding and floating mode";
         if (appearanceOnly) return "selection text inset and same-device light/dark toolbar, header and floating editor rendering";
         if (layoutOnly) return "saved/cancelled/reset side order and document boundaries, return long press and all fifteen keys in portrait, landscape, one-handed and floating modes";
         return spaceCopyOnly ? "space upward copy, editor permissions, selection restoration and clipboard preview"
@@ -60,6 +73,79 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
         try {
             save(preferences, ++revision, values);
             publish(local, settings.toString().getBytes(StandardCharsets.UTF_8));
+            if (footerOnly) {
+                for (boolean floating : new boolean[] {false, true}) {
+                    stage = "shared footer floating=" + floating;
+                    settings.getJSONObject("settings").put("platform.android.floating_keyboard", floating)
+                        .put("platform.android.bottom_bar", true).put("platform.android.bottom_padding", false);
+                    publish(local, settings.toString().getBytes(StandardCharsets.UTF_8));
+                    openPanel(floating ? "floating" : null);
+                    Rect footer = bounds(awaitStableBounds(described("文本编辑底栏")));
+                    Rect globe = bounds(awaitStableBounds(described("切换输入法").and(TextEditLineDeviceChecks::panelControl)));
+                    Rect clipboard = bounds(awaitStableBounds(described("剪贴板").and(TextEditLineDeviceChecks::panelControl)));
+                    click("全选");
+                    click("复制");
+                    await(described(PREVIEW));
+                    checkFooterUnchanged(footer, globe, clipboard);
+                    captureLayout("footer-preview-" + floating);
+                    click("不再显示这条复制的内容");
+                    absent(described("最近复制"));
+                    checkFooterUnchanged(footer, globe, clipboard);
+                    click("返回键盘");
+                    if (!normalSurfaceBeforeEdit.equals(surfaceBounds(awaitStableBounds(described("文本编辑")))))
+                        throw new AssertionError("Footer changed restored keyboard bounds");
+                }
+                return;
+            }
+            if (headerOnly) {
+                for (boolean floating : new boolean[] {false, true}) {
+                    for (int size : new int[] {50, 100, 90, 150}) {
+                        stage = "header floating=" + floating + " size=" + size;
+                        settings.getJSONObject("settings").put("platform.android.floating_keyboard", floating);
+                        if (size == 50 || size == 100) settings.getJSONObject("settings")
+                            .remove("platform.android.toolbar_size_percent");
+                        else settings.getJSONObject("settings").put("platform.android.toolbar_size_percent", size);
+                        values.put("candidate_scale_percent", size == 50 ? 50 : 100);
+                        save(preferences, ++revision, values);
+                        publish(local, settings.toString().getBytes(StandardCharsets.UTF_8));
+                        openPanel(floating ? "floating" : null);
+                        captureLayout(stage);
+                        click("返回键盘");
+                        if (!normalSurfaceBeforeEdit.equals(surfaceBounds(awaitStableBounds(described("文本编辑")))))
+                            throw new AssertionError("Header resizing changed the restored keyboard bounds: " + stage);
+                    }
+                }
+                return;
+            }
+            if (heightOnly) {
+                for (boolean floating : new boolean[] {false, true}) {
+                    for (boolean bar : new boolean[] {false, true}) {
+                        for (int padding : new int[] {0, 20, 72}) {
+                            stage = "text editor height floating=" + floating + " bar=" + bar + " padding=" + padding;
+                            settings.getJSONObject("settings")
+                                .put("platform.android.floating_keyboard", floating)
+                                .put("platform.android.bottom_bar", bar)
+                                .put("platform.android.bottom_padding", padding > 0)
+                                .put("platform.android.bottom_padding_height", padding);
+                            publish(local, settings.toString().getBytes(StandardCharsets.UTF_8));
+                            openPanel(floating ? "floating" : null);
+                            if (normalBottomBarBeforeEdit != null) {
+                                float density = getTargetContext().getResources().getDisplayMetrics().density;
+                                int extraPadding = Math.round(Math.max(0, padding - 40) * density);
+                                int bottom = bounds(awaitStableBounds(described("文本编辑面板"))).bottom;
+                                if (bottom != normalBottomBarBeforeEdit.bottom - extraPadding)
+                                    throw new AssertionError("Text edit did not reuse the bottom bar space: " + stage);
+                            }
+                            checkEditorNavigation(stage);
+                            click("返回键盘");
+                            Rect restored = surfaceBounds(awaitStableBounds(described("文本编辑")));
+                            if (!normalSurfaceBeforeEdit.equals(restored))
+                                throw new AssertionError("Closing text edit changed the keyboard surface: " + stage);
+                        }
+                    }
+                }
+                return;
+            }
             if (appearanceOnly) {
                 TextEditPanelAppearanceChecks.selectionInsets(this);
                 String night = shellText("cmd uimode night").trim();
@@ -409,8 +495,56 @@ public final class TextEditRecentClipboardDeviceSmoke extends DeviceSmoke {
         automation.waitForIdle(500, 5000);
         SystemClock.sleep(1500);
         if (visible(described("最近复制"))) click("不再显示这条复制的内容");
+        // 大工具栏的文本编辑入口可能在横向滚动区外，先按真实使用路径滚到可见位置。
+        awaitAny(described("文本编辑")).performAction(
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId());
+        dropStaleNodes();
+        Rect normalSurface = surfaceBounds(awaitStableBounds(described("文本编辑")));
+        int normalToolbarHeight = bounds(awaitStableBounds(key("更多")).getParent()).height();
+        normalSurfaceBeforeEdit = normalSurface;
+        normalBottomBarBeforeEdit = visible(described("键盘底栏"))
+            ? bounds(awaitStableBounds(described("键盘底栏"))) : null;
+        if (normalBottomBarBeforeEdit != null) {
+            normalSwitchBeforeEdit = bounds(awaitStableBounds(described("切换输入法")
+                .and(node -> normalBottomBarBeforeEdit.contains(bounds(node)))));
+            normalClipboardBeforeEdit = bounds(awaitStableBounds(described("剪贴板")
+                .and(node -> normalBottomBarBeforeEdit.contains(bounds(node)))));
+        }
         click("文本编辑");
-        await(described("文本编辑面板"));
+        Rect editingSurface = surfaceBounds(awaitStableBounds(described("文本编辑面板")));
+        if (!normalSurface.equals(editingSurface))
+            throw new AssertionError("Opening text edit changed the keyboard surface in " + mode
+                + ": " + normalSurface + " -> " + editingSurface);
+        Rect header = bounds(awaitStableBounds(described("文本编辑标题栏")));
+        if (header.height() != normalToolbarHeight)
+            throw new AssertionError("Text edit header height differs from toolbar: "
+                + header.height() + " != " + normalToolbarHeight);
+        absent(described("键盘底栏"));
+        Rect footer = bounds(awaitStableBounds(described("文本编辑底栏")));
+        int expectedHeight = Math.round(40 * getTargetContext().getResources().getDisplayMetrics().density);
+        if (footer.height() != expectedHeight) throw new AssertionError("Editor footer is not 40dp");
+        if (normalBottomBarBeforeEdit != null) {
+            int offset = footer.top - normalBottomBarBeforeEdit.top;
+            Rect globe = new Rect(normalSwitchBeforeEdit), clipboard = new Rect(normalClipboardBeforeEdit);
+            globe.offset(0, offset);
+            clipboard.offset(0, offset);
+            checkFooterUnchanged(footer, globe, clipboard);
+        }
+    }
+
+    private void checkFooterUnchanged(Rect footer, Rect globe, Rect clipboard) {
+        if (!footer.equals(bounds(awaitStableBounds(described("文本编辑底栏"))))
+                || !globe.equals(bounds(awaitStableBounds(described("切换输入法").and(TextEditLineDeviceChecks::panelControl))))
+                || !clipboard.equals(bounds(awaitStableBounds(described("剪贴板").and(TextEditLineDeviceChecks::panelControl)))))
+            throw new AssertionError("Editor footer geometry differs from the keyboard or moved with preview");
+    }
+
+    /** 普通工具栏和编辑面板同属最近一层外框，比较它们的真实屏幕边界。 */
+    private static Rect surfaceBounds(AccessibilityNodeInfo node) {
+        for (AccessibilityNodeInfo parent = node.getParent(); parent != null; parent = parent.getParent()) {
+            if (equalsText("android.widget.FrameLayout", parent.getClassName())) return bounds(parent);
+        }
+        throw new AssertionError("Keyboard surface ancestor unavailable");
     }
 
     private void click(String description) throws Exception {

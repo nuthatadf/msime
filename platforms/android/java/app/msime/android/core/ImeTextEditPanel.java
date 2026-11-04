@@ -30,14 +30,16 @@ final class ImeTextEditPanel {
     private final List<KeyboardShortcutButton> shortcuts = new ArrayList<>();
     private Button undoHistoryButton;
     private Button redoHistoryButton;
+    private LinearLayout header;
+    private int headerHeight;
+    private int headerIconPercent = 100;
+    private int headerButtonWidth;
 
     ImeTextEditPanel(MSIMEInputService service) { s = service; }
 
     LinearLayout build() {
         LinearLayout panel = LayoutPolicy.column(s);
         panel.setContentDescription("文本编辑面板");
-        int padding = s.pixels(4);
-        ViewPolicy.setPadding(panel, padding, padding, padding, padding);
         ViewPolicy.setClickable(panel, true);
         populate(panel);
         ViewPolicy.hide(panel);
@@ -52,15 +54,24 @@ final class ImeTextEditPanel {
         redoHistoryButton = null;
         panel.removeAllViews();
         KeyboardSkin skin = s.imeStyler.themed(s.skin);
-        LinearLayout header = LayoutPolicy.row(s);
+        header = LayoutPolicy.row(s);
+        header.setContentDescription("文本编辑标题栏");
         header.addView(icon(KeyboardIconPaths.Icon.CHEVRON, 90, "返回键盘", this::backToKeyboard), headerCell());
         TextView title = ViewPolicy.textLabel(s, "文本编辑", 16);
+        title.setSingleLine(true);
+        ViewPolicy.clearFontPadding(title);
+        KeyboardTypographyPolicy.setFittedKeyTextSize(title, 10, 16);
         ViewPolicy.setCenteredVertically(title);
         ViewPolicy.setTextColor(title, Color.parseColor(skin.keyForeground()));
         header.addView(title, LayoutPolicy.weightedMatchParentParams(1));
         header.addView(history(false), headerCell());
         header.addView(history(true), headerCell());
-        panel.addView(header, LayoutPolicy.matchWidthHeightPx(s.pixels(44)));
+        int padding = s.pixels(4);
+        LinearLayout.LayoutParams headerParams = LayoutPolicy.matchWidthHeightPx(s.pixels(44));
+        headerParams.setMargins(padding, padding, padding, 0);
+        panel.addView(header, headerParams);
+        resizeHeader(headerHeight > 0 ? headerHeight : s.pixels(44), headerIconPercent,
+            headerButtonWidth > 0 ? headerButtonWidth : s.pixels(44));
 
         TextEditPanelGrid grid = new TextEditPanelGrid(s);
         grid.setSkin(skin);
@@ -68,33 +79,55 @@ final class ImeTextEditPanel {
             ? null : s.preferencesSnapshot.optJSONObject("preferences");
         for (TextEditPanelModel.Key spec : TextEditPanelModel.keys(TextEditButtonOrder.fromPreferences(preferences)))
             grid.addKey(spec, key(spec));
-        panel.addView(grid, LayoutPolicy.weightedWidthParams(1));
+        LinearLayout.LayoutParams gridParams = LayoutPolicy.weightedWidthParams(1);
+        gridParams.setMargins(padding, 0, padding, 0);
+        panel.addView(grid, gridParams);
 
-        LinearLayout footer = LayoutPolicy.row(s);
-        footer.addView(shortcut(KeyboardShortcutIconPolicy.Icon.GLOBE, "切换输入法", () -> {
+        Button switchIme = shortcut(KeyboardShortcutIconPolicy.Icon.GLOBE, "切换输入法", () -> {
             InputMethodManager manager = s.getSystemService(InputMethodManager.class);
             if (manager != null) manager.showInputMethodPicker();
-        }), headerCell());
+        });
+        LinearLayout preview = LayoutPolicy.row(s);
         previewText = ViewPolicy.textLabel(s, null, 12);
         ViewPolicy.setCentered(previewText);
         ViewPolicy.setTextColor(previewText, Color.parseColor(skin.keyForeground()));
         previewText.setMaxLines(2);
-        footer.addView(previewText, LayoutPolicy.weightedMatchParentParams(1));
+        preview.addView(previewText, LayoutPolicy.weightedMatchParentParams(1));
         previewAction = s.keyboardKey("", "", s::runRecentClipQuickAction);
         KeyboardTypographyPolicy.setFittedKeyTextSize(previewAction, 10, 12);
-        footer.addView(previewAction, headerCell());
+        preview.addView(previewAction, headerCell());
         dismissPreview = s.keyboardKey("×", "不再显示这条复制的内容", s::dismissRecentClip);
         dismissPreview.setContentDescription("不再显示这条复制的内容");
-        footer.addView(dismissPreview, headerCell());
-        footer.addView(shortcut(KeyboardShortcutIconPolicy.Icon.CLIPBOARD, "剪贴板",
-            s.imeToolbar.panelToggle(() -> s.clipboardSurface, s.imePanels::showClipboardHistory)), headerCell());
-        panel.addView(footer, LayoutPolicy.matchWidthHeightPx(s.pixels(44)));
+        preview.addView(dismissPreview, headerCell());
+        Button clipboard = shortcut(KeyboardShortcutIconPolicy.Icon.CLIPBOARD, "剪贴板",
+            s.imeToolbar.panelToggle(() -> s.clipboardSurface, s.imePanels::showClipboardHistory));
+        LinearLayout footer = new KeyboardBottomBarLayout(s, switchIme, preview, clipboard);
+        footer.setContentDescription("文本编辑底栏");
+        panel.addView(footer, LayoutPolicy.matchWidthHeightPx(s.pixels(KeyboardBottomBarPolicy.BAR_HEIGHT_DP)));
         styleShortcuts(Color.parseColor(s.skin.toolbarIcon()), Color.parseColor(s.skin.toolbarActiveIcon()),
             Color.parseColor(s.skin.toolbarActiveBackground()));
     }
 
     private LinearLayout.LayoutParams headerCell() {
         return LayoutPolicy.linearParamsPx(s.pixels(44), LinearLayout.LayoutParams.MATCH_PARENT);
+    }
+
+    /** 复用普通工具栏已计算的行高和图标比例；面板重建后仍沿用当前尺寸。 */
+    void resizeHeader(int height, int iconPercent, int buttonWidth) {
+        headerHeight = height;
+        headerIconPercent = iconPercent;
+        headerButtonWidth = buttonWidth;
+        if (header == null) return;
+        ViewPolicy.setFixedHeight(header, height);
+        for (int index : new int[] {0, 2, 3}) {
+            View button = header.getChildAt(index);
+            if (button.getLayoutParams().width != buttonWidth) {
+                button.getLayoutParams().width = buttonWidth;
+                button.requestLayout();
+            }
+            if (button instanceof KeyboardShortcutButton shortcut) shortcut.setSizePercent(iconPercent);
+            if (button instanceof TextEditIconButton back) back.setGlyphSize(24 * iconPercent / 100f);
+        }
     }
 
     private Button icon(KeyboardIconPaths.Icon glyph, float rotation, String description, Runnable action) {
